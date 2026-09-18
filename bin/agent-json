@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+"""Emit agent.yaml as the JSON body /v1/agents expects.
+
+agent.yaml is the source of truth because a 1500-character system prompt is
+editable there and is not once escaped into a JSON string. This exists so the
+JSON is always generated rather than a second copy that silently drifts.
+"""
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(__file__).resolve().parent.parent
+yaml = (root / "agent.yaml").read_text()
+
+block = yaml.split("system: |\n", 1)[1].split("\nmcp_servers:", 1)[0]
+system = "\n".join(
+    line[2:] if line.startswith("  ") else line for line in block.split("\n")
+).strip() + "\n"
+
+json.dump(
+    {
+        "name": "Manifestly Ops Agent",
+        "description": "Works Manifestly run steps assigned to it, following each step's own instructions.",
+        "model": {"id": "claude-opus-5", "effort": "high"},
+        "system": system,
+        "mcp_servers": [
+            {"type": "url", "name": "manifestly", "url": "https://mcp.manifest.ly/mcp"}
+        ],
+        "tools": [
+            {"type": "mcp_toolset", "mcp_server_name": "manifestly"},
+            {"type": "agent_toolset_20260401"},
+        ],
+    },
+    sys.stdout,
+    indent=2,
+)
+print()
