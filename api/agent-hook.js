@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { signatureIsValid } from "./_signature.js";
+import { signatureIsValid, expectedDigest } from "./_signature.js";
 
 const TRIGGERING_EVENTS = new Set(["step_assigned", "step_became_applicable"]);
 
@@ -14,6 +14,18 @@ export async function POST(request) {
   const signature = request.headers.get("x-manifestly-signature");
 
   if (!signatureIsValid(rawBody, signature, process.env.MANIFESTLY_WEBHOOK_SIGNING_SECRET)) {
+    // TEMPORARY diagnostics. Digests are MACs, not keys, so logging them is
+    // safe; the secret itself is reported only as a length. Remove once the
+    // first real delivery verifies.
+    console.log(JSON.stringify({
+      diag: "signature_rejected",
+      body_bytes: rawBody.length,
+      body_head: rawBody.slice(0, 40),
+      header_present: signature !== null,
+      header_head: (signature || "").slice(0, 16),
+      secret_len: (process.env.MANIFESTLY_WEBHOOK_SIGNING_SECRET || "").length,
+      expected_head: expectedDigest(rawBody, process.env.MANIFESTLY_WEBHOOK_SIGNING_SECRET).slice(0, 16),
+    }));
     return new Response("invalid signature", { status: 401 });
   }
 
