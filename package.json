@@ -1,0 +1,14 @@
+{
+  "name": "manifestly-agent-relay",
+  "version": "0.1.0",
+  "description": "Receives a Manifestly agent webhook and starts a Claude Managed Agents session.",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.127.0"
+  }
+}
