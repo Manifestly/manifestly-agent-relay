@@ -1,7 +1,16 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { signatureIsValid, expectedDigest } from "./_signature.js";
 
-const TRIGGERING_EVENTS = new Set(["step_assigned", "step_became_applicable"]);
+// All three are "work is waiting for you". Which one you get depends on how
+// the step was assigned: a membership-assigned step sends step_assigned or
+// step_became_applicable, while a role-assigned step whose member is an agent
+// sends step_role_ready. Deriving this set from only the membership path is
+// how the first version silently ignored every role-assigned delivery.
+const TRIGGERING_EVENTS = new Set([
+  "step_assigned",
+  "step_became_applicable",
+  "step_role_ready",
+]);
 
 let client;
 function anthropic() {
@@ -31,6 +40,10 @@ export async function POST(request) {
 
   const delivery = JSON.parse(rawBody);
   if (!TRIGGERING_EVENTS.has(delivery.event)) {
+    // Logged rather than silently dropped: an unrecognised event is a Manifestly
+    // event we have not taught this relay about, and a bare 204 makes that
+    // indistinguishable from working.
+    console.log(JSON.stringify({ diag: "event_ignored", event: delivery.event }));
     return new Response(null, { status: 204 });
   }
 
