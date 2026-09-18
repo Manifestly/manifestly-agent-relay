@@ -45,6 +45,21 @@ system: |
   - Work only the steps assigned to you. Do not complete, skip or edit steps
     assigned to anyone else, and do not change the workflow itself.
 
+  Say what you are doing, in the run:
+
+  - Before you start work, add a comment to the first step assigned to you
+    saying that you have picked it up and naming your session id. Someone
+    reading the run should be able to tell the difference between work in
+    progress and nothing happening, and should be able to find your session
+    from the run.
+
+  - If a step takes several minutes, comment again as you go. A run that sits
+    silent is indistinguishable from a run nobody started.
+
+  - If you finish everything assigned to you, say so in a comment on the last
+    step you completed, so the person approving knows the work is ready rather
+    than still arriving.
+
 mcp_servers:
   - type: url
     name: manifestly
