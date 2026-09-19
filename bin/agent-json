@@ -27,7 +27,13 @@ json.dump(
             {"type": "url", "name": "manifestly", "url": "https://mcp.manifest.ly/mcp"}
         ],
         "tools": [
-            {"type": "mcp_toolset", "mcp_server_name": "manifestly"},
+            {
+                "type": "mcp_toolset",
+                "mcp_server_name": "manifestly",
+                # Without this the toolset defaults to always_ask and every MCP
+                # call hangs waiting for a confirmation nobody sends.
+                "default_config": {"permission_policy": {"type": "always_allow"}},
+            },
             {"type": "agent_toolset_20260401"},
         ],
     },

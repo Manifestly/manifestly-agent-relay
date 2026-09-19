@@ -66,6 +66,14 @@ mcp_servers:
     url: https://mcp.manifest.ly/mcp
 
 tools:
+  # always_allow is load-bearing, not tidiness. mcp_toolset defaults to
+  # always_ask, which suspends every MCP call waiting for a tool_confirmation
+  # event. This agent is started by a fire-and-forget webhook relay with nobody
+  # listening to answer, so the default makes it emit tool calls and go idle
+  # with them pending, doing nothing and reporting nothing.
   - type: mcp_toolset
     mcp_server_name: manifestly
+    default_config:
+      permission_policy:
+        type: always_allow
   - type: agent_toolset_20260401
