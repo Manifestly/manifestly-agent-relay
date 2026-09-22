@@ -7,11 +7,13 @@ It is about forty lines. Manifestly cannot call the Anthropic API directly, beca
 ## What it does
 
 1. Verifies the `X-Manifestly-Signature` header against the raw request body.
-2. Ignores any event other than `step_assigned` and `step_became_applicable`.
+2. Starts a session for any delivery naming a run, and logs any that does not.
 3. Starts a session of your configured agent, passing the run and step ids.
 4. Returns 200 only if the session was created, so a failure is retried.
 
 The delivery carries ids and nothing else. The agent reads the run through the Manifestly MCP server, which means the instructions for the work live in your workflow's step text, not in this code. Nothing here knows what process it triggered.
+
+**It does not filter on event name, deliberately.** Which event you get depends on how the step was assigned: `step_assigned` or `step_became_applicable` for a step assigned to a membership, `step_role_ready` for a role with several members, `run_invited` when the agent joins the run as a participant. An earlier version listed the two it expected and silently ignored real deliveries twice, returning 204 and looking healthy. An agent hook only ever receives agent-work notifications, so the useful question is whether the delivery names a run.
 
 ## Deploy
 
@@ -42,6 +44,16 @@ A role resolves to a single member when it has one, and that is what makes the d
 
 Roles are still worth using, because they are portable: a workflow exported as a template carries the role name, so whoever imports it maps their own agent. A membership id does not port.
 
+## Things that cost us a day
+
+**Set the environment variables from the CLI, not a dashboard.** Both secrets we pasted into Vercel's web form arrived truncated: a 32-character signing secret stored as 19, and an API key as a fragment. Neither failed at the time. They surfaced much later as unexplained 401s from two different systems. Verify the length before and after.
+
+**Your agent's MCP tools probably default to asking permission.** On Claude Managed Agents, `mcp_toolset` defaults to `permission_policy: always_ask`, which suspends every call waiting for a confirmation event. That is right for an interactive agent and fatal for one started by a webhook, because nobody is listening to answer. The symptom is an agent that emits its tool calls and goes idle having done nothing. Set `always_allow` explicitly.
+
+**Vaulted secrets reach headers and bodies, never query strings.** If a service authenticates with `?key=...`, the placeholder goes out literally and you get its own auth error back. Check whether the service also accepts a header: Airbrake's documentation describes only the query parameter, and it accepts `Authorization: Bearer` perfectly well.
+
+**Only the production alias is public.** Deployment-specific URLs sit behind platform authentication, which answers with a 401 that looks exactly like this relay's own rejection. Use the alias, and read the body before assuming the signature check ran.
+
 ## What it deliberately does not do
 
 **No deduplication.** The body carries a `delivery_id` for exactly this purpose, but storing it needs a key-value store, and a duplicate costs one extra session whose agent finds the step already done. Add it if your volume makes that matter.
@@ -54,4 +66,6 @@ Roles are still worth using, because they are portable: a workflow exported as a
 npm test
 ```
 
-The signature tests are the ones that matter, since that is the only line here that must not be wrong. They currently pin the HMAC arithmetic against a digest computed by `openssl` rather than by this code. They do **not** yet prove that a real delivery verifies, because Manifestly signs JSON-canonicalized bytes and the fixtures are strings written by hand. There is a `todo` test marking that gap; fill it with a captured delivery.
+The signature tests are the ones that matter, since that is the only line here that must not be wrong. They pin the HMAC arithmetic against a digest computed by `openssl` rather than by this code, so they assert agreement between two implementations rather than with themselves.
+
+They do **not** prove that a real delivery verifies, because Manifestly signs JSON-canonicalized bytes and the fixtures are strings written by hand. There is a `todo` test marking that gap; fill it with a captured delivery. Production has since verified real deliveries, so the canonicalization is right in practice and still unpinned in the suite.

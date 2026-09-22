@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { signatureIsValid, expectedDigest } from "./_signature.js";
+import { signatureIsValid } from "./_signature.js";
 
 // Deliberately not an allowlist of event names. An agent hook receives only
 // agent-work notifications, and which name arrives depends on how the step was
@@ -21,17 +21,15 @@ export async function POST(request) {
   const signature = request.headers.get("x-manifestly-signature");
 
   if (!signatureIsValid(rawBody, signature, process.env.MANIFESTLY_WEBHOOK_SIGNING_SECRET)) {
-    // TEMPORARY diagnostics. Digests are MACs, not keys, so logging them is
-    // safe; the secret itself is reported only as a length. Remove once the
-    // first real delivery verifies.
+    // A bare 401 is indistinguishable from a dozen other causes, including a
+    // platform login page returning the same status. These three facts narrow
+    // it without revealing anything: whether the body arrived, whether the
+    // header arrived, and whether a secret is configured at all.
     console.log(JSON.stringify({
       diag: "signature_rejected",
       body_bytes: rawBody.length,
-      body_head: rawBody.slice(0, 40),
       header_present: signature !== null,
-      header_head: (signature || "").slice(0, 16),
-      secret_len: (process.env.MANIFESTLY_WEBHOOK_SIGNING_SECRET || "").length,
-      expected_head: expectedDigest(rawBody, process.env.MANIFESTLY_WEBHOOK_SIGNING_SECRET).slice(0, 16),
+      secret_configured: Boolean(process.env.MANIFESTLY_WEBHOOK_SIGNING_SECRET),
     }));
     return new Response("invalid signature", { status: 401 });
   }

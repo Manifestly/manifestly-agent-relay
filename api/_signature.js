@@ -20,8 +20,3 @@ export function signatureIsValid(rawBody, header, secret) {
 
   return timingSafeEqual(Buffer.from(received), Buffer.from(expected));
 }
-
-/** Exported for the temporary rejection diagnostics in the handler. */
-export function expectedDigest(rawBody, secret) {
-  return createHmac("sha256", secret || "").update(rawBody).digest("hex");
-}
