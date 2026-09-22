@@ -99,5 +99,8 @@ Values added this way are stored as secrets and cannot be read back: `vercel env
 
 ## Git Conventions
 
+- Default branch is `main`, matching `manifestly-mcp`. The Rails repo's `master` is legacy and not a precedent.
 - Stage files by name; never `git add -A` or `git add .`
 - Keep the README's description of behavior in step with the code. It has already drifted once: it described an event allowlist for three commits after the allowlist was removed.
+
+Branch protection is not yet enabled, and everything here was pushed straight to the default branch during the spike. That was fine for a repo that did not exist yet and stopped being fine once it started receiving production webhooks. Enabling protection and requiring a PR is part of moving this off a personal Vercel account.
