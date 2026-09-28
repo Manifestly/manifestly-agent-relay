@@ -46,7 +46,9 @@ Several deliveries can name one run within milliseconds. A rejection reopens N s
 
 This is not theoretical. Three sessions once picked up the same step, two of them posting near-identical plans five seconds apart, all three intending to file the same five GitHub issues. Only an unrelated network restriction stopped it being fifteen. Note also that `comment_created` is an agent event, so a person holding a normal conversation in run comments spawns a session per message.
 
-`api/_claim.js` decides; `api/_store.js` is the Redis behind it. The mechanism is `SET key value NX EX`, which is atomic, so of N simultaneous callers exactly one proceeds.
+`api/_claim.js` decides; `api/_store.js` is the Redis behind it, via Upstash's own `@upstash/redis` client rather than hand-rolled HTTP, so the one part that talks to a third party is the vendor's code against the vendor's service. The mechanism is `SET key value NX EX`, which is atomic, so of N simultaneous callers exactly one proceeds.
+
+The decision logic is unit-tested against an in-memory implementation of those semantics, and the store was additionally driven against the real Upstash instance: three concurrent claims, one winner, plus takeover, release and TTL expiry.
 
 **Suppressing a delivery loses nothing, and that is what makes this safe.** The payload carries ids only and the agent reads live run state through MCP, so the surviving session sees everything the suppressed ones pointed at. This is the ids-only payload paying for itself.
 
