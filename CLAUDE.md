@@ -111,6 +111,16 @@ Two consequences. Publishing a reference implementation of a signature check mea
 
 Deploys are manual CLI uploads. The repo is owned by the Manifestly GitHub org and the Vercel project is on a personal Hobby account, and Vercel's Git integration for organization-owned repositories is a paid-team feature. So there is no auto-deploy on push, and a code change needs `npx vercel deploy --prod` run by hand.
 
+**A CLI deploy is attributed to the HEAD commit's author, not to the CLI user.** `vercel whoami` showing the account that owns the project is not enough: if the commit author's email is not on that Vercel account, the deployment is created and immediately **Blocked**, with `vercel inspect` reporting "the commit author doesn't have permission to create deployments for this project". The notification email leads with "Upgrade to Pro", which is not the fix.
+
+This repo therefore pins `user.email` locally to the address on the Vercel account:
+
+```bash
+git config user.email mark@manifest.ly
+```
+
+It bit us once when a global git identity changed between deploys: twelve commits had one address, the next three had another, and the first deploy after that was blocked while every earlier one had passed. To ship without waiting on a corrected commit, deploy from a copy of the tree with no `.git` directory; with no git metadata there is no author to check.
+
 Only the **production alias** is public. Deployment-specific URLs sit behind Vercel Authentication, which answers with a 401 that looks exactly like this relay's own rejection. Read the body before concluding the signature check ran.
 
 ## Set Environment Variables From The CLI
@@ -130,6 +140,10 @@ Values added this way are stored as secrets and cannot be read back: `vercel env
 ## Managed Agents Constraints Worth Knowing
 
 **`mcp_toolset` defaults to `permission_policy: always_ask`.** That suspends every MCP call waiting for a confirmation event. Correct for an interactive agent and fatal for one started by a fire-and-forget webhook, because nobody is listening to answer. The symptom is an agent that emits its tool calls and goes idle having done nothing, with no error anywhere. Set `always_allow` explicitly; `agent.yaml` does and carries a comment saying why.
+
+**The sandbox egress allowlist does not govern every network path the agent has.** Ordinary HTTP out of the sandbox is proxied and refused per host, with a `403` carrying `x-deny-reason: host_not_allowed` and a plain-text body naming the host. The agent's own `web_fetch` tool is not subject to it: asked for a URL the proxy refuses, `curl` gets the 403 and `web_fetch` returns the document.
+
+Two consequences. Do not treat the allowlist as a complete control on what the agent can reach, and when an agent reports a host as blocked, ask which path it tried. `app.manifest.ly` and `api.manifest.ly` are both refused on the proxied path, which also means the Manifestly MCP traffic is not travelling over it.
 
 **Vault credentials substitute into headers and bodies, never query strings.** A service that authenticates with `?key=...` receives the literal placeholder and returns its own auth error. Check whether it also accepts a header: Airbrake's documentation describes only the query parameter and accepts `Authorization: Bearer` perfectly well.
 
