@@ -111,6 +111,16 @@ Two consequences. Publishing a reference implementation of a signature check mea
 
 Deploys are manual CLI uploads. The repo is owned by the Manifestly GitHub org and the Vercel project is on a personal Hobby account, and Vercel's Git integration for organization-owned repositories is a paid-team feature. So there is no auto-deploy on push, and a code change needs `npx vercel deploy --prod` run by hand.
 
+**A CLI deploy is attributed to the HEAD commit's author, not to the CLI user.** `vercel whoami` showing the account that owns the project is not enough: if the commit author's email is not on that Vercel account, the deployment is created and immediately **Blocked**, with `vercel inspect` reporting "the commit author doesn't have permission to create deployments for this project". The notification email leads with "Upgrade to Pro", which is not the fix.
+
+This repo therefore pins `user.email` locally to the address on the Vercel account:
+
+```bash
+git config user.email mark@manifest.ly
+```
+
+It bit us once when a global git identity changed between deploys: twelve commits had one address, the next three had another, and the first deploy after that was blocked while every earlier one had passed. To ship without waiting on a corrected commit, deploy from a copy of the tree with no `.git` directory; with no git metadata there is no author to check.
+
 Only the **production alias** is public. Deployment-specific URLs sit behind Vercel Authentication, which answers with a 401 that looks exactly like this relay's own rejection. Read the body before concluding the signature check ran.
 
 ## Set Environment Variables From The CLI
