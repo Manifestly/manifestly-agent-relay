@@ -11,21 +11,57 @@ Receives the webhook Manifestly sends when a run step is assigned to an AI agent
 
 ## Environment Variables
 
-All five required in production, all set through the Vercel CLI (see below):
+Five required in production, all set through the Vercel CLI (see below):
 
 - `MANIFESTLY_WEBHOOK_SIGNING_SECRET`: account-level, from Settings. Verify it is 32 hex characters
 - `ANTHROPIC_API_KEY`: the key sessions are created with. Scope it to one workspace
 - `CMA_AGENT_ID` / `CMA_ENVIRONMENT_ID` / `CMA_VAULT_ID`: what every session is started from
 
+Two more for the single-flight claim, supplied by the Upstash Redis marketplace integration under either spelling:
+
+- `KV_REST_API_URL` or `UPSTASH_REDIS_REST_URL`
+- `KV_REST_API_TOKEN` or `UPSTASH_REDIS_REST_TOKEN`
+
+Without them the relay still runs and still starts sessions. It logs `claim_store_unconfigured` and reverts to one session per delivery, which is the duplicate behaviour Single Flight Per Run exists to stop.
+
 ## Architecture
 
-The relay is a pure function of request and environment. No database, no cache, no filesystem, no in-memory state across invocations. Under a hundred lines.
+The relay is a pure function of request, environment, and one claim key. No database of its own, no filesystem, no in-memory state across invocations.
 
 The state lives where it belongs. The **Run** in Manifestly holds the process, meaning step completion, recorded data, comments, approval status, and the review decisions with their snapshots. The **Execution** in Manifestly holds the delivery: request body, response code, response body, which means the `session_id` this handler returns is already recorded against the run that caused it. The **Session** at Anthropic holds the agent's transcript.
 
 That closes the audit chain without the relay remembering anything: Run, then Execution, then `session_id`, then Session.
 
-**The day this needs a database is the day something has moved into it that belongs in the Run.** The only honest candidate today is deduplication on `delivery_id`, deliberately left out: at a weekly cadence a duplicate costs one extra session that finds the work already done.
+### The one exception, and why it is not one
+
+The relay holds a single short-lived key per run, in Redis, to stop several deliveries starting several sessions for the same run. That looks like the thing this section forbids and is not, for a reason worth keeping straight.
+
+The Run records **what work happened**. The claim records **that a process is currently working**. Those are different facts with different lifetimes. A Run should not carry a column meaning "a session is in flight": it is true for minutes, it is wrong the moment a session dies, and nothing would ever correct it. A key with a TTL is the right home precisely because expiry is what makes a crashed session self-healing rather than a permanently stuck run.
+
+So the rule still stands, restated: **the day this needs a database for anything describing the work is the day something has moved into it that belongs in the Run.** Coordination state about in-flight processing is not that.
+
+## Single Flight Per Run
+
+Several deliveries can name one run within milliseconds. A rejection reopens N steps, an approval unblocks a section, a comment arrives while either is in flight. Every one of them used to create its own session.
+
+This is not theoretical. Three sessions once picked up the same step, two of them posting near-identical plans five seconds apart, all three intending to file the same five GitHub issues. Only an unrelated network restriction stopped it being fifteen. Note also that `comment_created` is an agent event, so a person holding a normal conversation in run comments spawns a session per message.
+
+`api/_claim.js` decides; `api/_store.js` is the Redis behind it. The mechanism is `SET key value NX EX`, which is atomic, so of N simultaneous callers exactly one proceeds.
+
+**Suppressing a delivery loses nothing, and that is what makes this safe.** The payload carries ids only and the agent reads live run state through MCP, so the surviving session sees everything the suppressed ones pointed at. This is the ids-only payload paying for itself.
+
+Three things that decide the shape, all read from the API rather than assumed:
+
+- **There is no append.** Session events are read-only and `sessions.update` touches only tools, mcp_servers, budget and metadata. Input reaches a session only at `create`. So deliveries are folded into one session by being dropped, not by being delivered into it.
+- **An agent cannot end its own session.** `end_turn` ends a turn. The session then sits `idle` waiting for input a fire-and-forget trigger never sends.
+- **Status is readable.** `running`, `idle`, `terminated`, `rescheduling`. So "is the holder still working" is a fact to read rather than a timeout to guess, and `running` is the only suppress condition. Because sessions start `idle`, a status check alone would let a second delivery conclude the first had finished, which is why the claim covers the create-to-running gap.
+
+**If the sessions API ever gains a way to post an event into a running session, redo this.** One session per run with appends is strictly better: nothing is dropped, and the claim degrades to a lookup.
+
+**The claim is not a safety gate and must not fail closed.** An unreachable store degrades to the old behaviour and logs `claim_store_unavailable`, because suppressing on a store outage would stop the agent running at all, which is worse than the duplicates. The durable answer to duplicate *external writes* is idempotency at the action, not only at the trigger.
+
+`CLAIM_TTL_SECONDS` is a backstop, not the mechanism, since the status check governs while a session id is held. It is provisional at one hour, and the `suppressed_duplicate` log is what should replace it with a measured value rather than another guess.
+
 
 ## Verify Over The Raw Bytes
 
