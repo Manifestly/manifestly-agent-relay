@@ -141,6 +141,10 @@ Values added this way are stored as secrets and cannot be read back: `vercel env
 
 **`mcp_toolset` defaults to `permission_policy: always_ask`.** That suspends every MCP call waiting for a confirmation event. Correct for an interactive agent and fatal for one started by a fire-and-forget webhook, because nobody is listening to answer. The symptom is an agent that emits its tool calls and goes idle having done nothing, with no error anywhere. Set `always_allow` explicitly; `agent.yaml` does and carries a comment saying why.
 
+**The sandbox egress allowlist does not govern every network path the agent has.** Ordinary HTTP out of the sandbox is proxied and refused per host, with a `403` carrying `x-deny-reason: host_not_allowed` and a plain-text body naming the host. The agent's own `web_fetch` tool is not subject to it: asked for a URL the proxy refuses, `curl` gets the 403 and `web_fetch` returns the document.
+
+Two consequences. Do not treat the allowlist as a complete control on what the agent can reach, and when an agent reports a host as blocked, ask which path it tried. `app.manifest.ly` and `api.manifest.ly` are both refused on the proxied path, which also means the Manifestly MCP traffic is not travelling over it.
+
 **Vault credentials substitute into headers and bodies, never query strings.** A service that authenticates with `?key=...` receives the literal placeholder and returns its own auth error. Check whether it also accepts a header: Airbrake's documentation describes only the query parameter and accepts `Authorization: Bearer` perfectly well.
 
 **`vault_ids` is create-only.** Vaults attach when the session is created and cannot be added later, so a session started without one has an agent with no credentials and failures that read as confusion rather than as authentication.
