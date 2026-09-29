@@ -23,6 +23,11 @@ function memoryStore() {
     async release(key) {
       values.delete(key);
     },
+    async swapIfHolder(key, expected, value) {
+      if (values.get(key) !== expected) return false;
+      values.set(key, value);
+      return true;
+    },
   };
 }
 
@@ -113,4 +118,48 @@ test("the key is namespaced per run", () => {
 test("PENDING is distinguishable from any session id", () => {
   assert.equal(PENDING, "pending");
   assert.ok(!PENDING.startsWith("ses_"));
+});
+
+// The tests above all raced against an EMPTY store, so they only ever exercised
+// setIfAbsent. The takeover branch was single-threaded and therefore untested
+// for the property that matters, and it shipped with the same race the claim
+// exists to prevent. These are the examples that would have caught it.
+
+test("of two simultaneous takeovers of a finished session, exactly one proceeds", async () => {
+  const store = memoryStore();
+  await store.set(runClaimKey(42), "ses_finished");
+  const [a, b] = await Promise.all([
+    claimRun(store, 42, 60, neverRunning),
+    claimRun(store, 42, 60, neverRunning),
+  ]);
+  assert.equal([a, b].filter((r) => r.proceed).length, 1, "two sessions would be created");
+  const loser = [a, b].find((r) => !r.proceed);
+  assert.equal(loser.reason, "lost_takeover_race");
+});
+
+test("three simultaneous takeovers still produce exactly one session", async () => {
+  const store = memoryStore();
+  await store.set(runClaimKey(42), "ses_finished");
+  const results = await Promise.all(
+    [1, 2, 3].map(() => claimRun(store, 42, 60, neverRunning)),
+  );
+  assert.equal(results.filter((r) => r.proceed).length, 1);
+});
+
+test("the takeover winner leaves the key claimed, not still naming the dead session", async () => {
+  const store = memoryStore();
+  await store.set(runClaimKey(42), "ses_finished");
+  const result = await claimRun(store, 42, 60, neverRunning);
+  assert.equal(result.proceed, true);
+  assert.equal(await store.get(runClaimKey(42)), PENDING);
+});
+
+test("a delivery losing the takeover race does not clobber the winner's claim", async () => {
+  const store = memoryStore();
+  await store.set(runClaimKey(42), "ses_finished");
+  await claimRun(store, 42, 60, neverRunning);
+  await store.set(runClaimKey(42), "ses_winner_recorded");
+  const late = await claimRun(store, 42, 60, alwaysRunning);
+  assert.equal(late.proceed, false);
+  assert.equal(await store.get(runClaimKey(42)), "ses_winner_recorded");
 });

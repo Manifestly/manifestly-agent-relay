@@ -38,4 +38,18 @@ export const store = {
   async release(key) {
     await client().del(key);
   },
+  // Compare-and-swap. Redis has no native CAS, and SET ... GET is not a
+  // substitute: the loser of that race overwrites the value the winner just
+  // recorded. Lua runs the whole comparison and write as one operation, so a
+  // caller only wins if the key still holds exactly what it validated.
+  async swapIfHolder(key, expected, value, ttlSeconds) {
+    const swapped = await client().eval(
+      "if redis.call('GET', KEYS[1]) == ARGV[1] then " +
+        "redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3]) return 1 " +
+        "else return 0 end",
+      [key],
+      [expected, value, String(ttlSeconds)],
+    );
+    return swapped === 1;
+  },
 };

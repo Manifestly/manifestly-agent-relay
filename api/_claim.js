@@ -50,5 +50,17 @@ export async function claimRun(store, runId, ttlSeconds, isSessionRunning) {
     return { proceed: false, reason: "session_running", holder };
   }
 
-  return { proceed: true, takeover: true, previous: holder };
+  // Taking over has to be atomic for the same reason claiming does, and the
+  // first version of this was not: two deliveries landing in the same second
+  // both read the holder, both found it idle, and both returned proceed. That
+  // is the bug this whole module exists to prevent, reintroduced one branch
+  // further down, and it fired on the first unattended run.
+  //
+  // Compare-and-swap, so only the caller that actually replaces the holder it
+  // validated goes on to create a session.
+  if (await store.swapIfHolder(key, holder, PENDING, ttlSeconds)) {
+    return { proceed: true, takeover: true, previous: holder };
+  }
+
+  return { proceed: false, reason: "lost_takeover_race", holder };
 }
