@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { signatureIsValid } from "./_signature.js";
-import { claimRun, runClaimKey } from "./_claim.js";
+import { resolveSession, runSessionKey, createLockKey, sessionCannotAcceptInput } from "./_session.js";
 import { store, storeIsConfigured } from "./_store.js";
 
 // Deliberately not an allowlist of event names. An agent hook receives only
@@ -12,22 +12,25 @@ import { store, storeIsConfigured } from "./_store.js";
 // what is waiting for it from the run state, which its system prompt already
 // tells it to do.
 
-// A backstop rather than the mechanism: while a session id is held, its status
-// decides, so this only bounds how long a key outlives the thing it describes.
-// It has to outlive the gap between creating a session and it reporting
-// running, which is seconds. An hour is provisional and the suppression log is
-// what will replace it with a measured value.
-const CLAIM_TTL_SECONDS = 3600;
+// Held only across sessions.create, which is one API call. Two minutes is
+// generous for that and short enough that a crashed invocation costs one
+// delivery rather than wedging the run.
+const CREATE_LOCK_TTL_SECONDS = 120;
+
+// The pointer has to outlive the run, not the delivery. Runs in this workflow
+// finish within a day; the ones that stall waiting on a human approval are the
+// reason this is measured in weeks. A pointer that outlives its run costs one
+// stale key; a pointer that expires under its run costs a duplicate session,
+// which is the thing this exists to prevent.
+const SESSION_POINTER_TTL_SECONDS = 60 * 60 * 24 * 14;
+
+const POINTER_WAIT_ATTEMPTS = 8;
+const POINTER_WAIT_MS = 250;
 
 let client;
 function anthropic() {
   client ??= new Anthropic();
   return client;
-}
-
-async function sessionIsRunning(sessionId) {
-  const session = await anthropic().beta.sessions.retrieve(sessionId);
-  return session.status === "running";
 }
 
 export async function POST(request) {
@@ -54,100 +57,153 @@ export async function POST(request) {
     return new Response(null, { status: 204 });
   }
 
-  const claim = await claimForDelivery(delivery);
-  if (!claim.proceed) {
+  const outcome = await deliverToRun(delivery);
+
+  if (outcome.defer) {
+    // A 503 rather than a 204: this delivery has not been handled, and saying
+    // so is what makes Manifestly's retry do the work. The old code returned
+    // 204 here and the delivery was simply lost.
     console.log(JSON.stringify({
-      diag: "suppressed_duplicate",
-      reason: claim.reason,
+      diag: "deferred_to_retry",
       run_id: delivery.run_id,
       event: delivery.event,
       run_step_id: delivery.run_step_id ?? null,
-      holder: claim.holder ?? null,
     }));
-    return new Response(null, { status: 204 });
+    return new Response("session not yet available", { status: 503 });
+  }
+
+  return Response.json({ session_id: outcome.sessionId, resumed: outcome.resumed });
+}
+
+/**
+ * Routes one delivery to its run's session, creating that session if this is
+ * the first delivery for the run.
+ *
+ * `attempt` bounds the one recoverable failure: a pointer naming a session that
+ * no longer exists, which resolves by forgetting it and creating a new one.
+ */
+async function deliverToRun(delivery, attempt = 0) {
+  const runId = delivery.run_id;
+
+  if (!storeIsConfigured()) {
+    console.log(JSON.stringify({ diag: "session_store_unconfigured", run_id: runId }));
+    return { sessionId: (await createSession(delivery)).id, resumed: false };
+  }
+
+  let resolution;
+  try {
+    resolution = await resolveSession(store, runId, {
+      lockTtlSeconds: CREATE_LOCK_TTL_SECONDS,
+      pointerAttempts: POINTER_WAIT_ATTEMPTS,
+      pause: () => new Promise((resolve) => setTimeout(resolve, POINTER_WAIT_MS)),
+    });
+  } catch (error) {
+    // An unreachable store must not stop the agent working. It degrades to a
+    // session per delivery, which is what this whole design replaced, and says
+    // so loudly rather than failing closed into silence.
+    console.log(JSON.stringify({
+      diag: "session_store_unavailable",
+      run_id: runId,
+      error: String(error).slice(0, 200),
+    }));
+    return { sessionId: (await createSession(delivery)).id, resumed: false };
+  }
+
+  if (resolution.action === "defer") return { defer: true };
+
+  if (resolution.action === "send") {
+    try {
+      await sendToSession(resolution.sessionId, delivery);
+      await refreshPointer(runId, resolution.sessionId);
+      console.log(JSON.stringify({
+        diag: "resumed_session",
+        session_id: resolution.sessionId,
+        run_id: runId,
+        event: delivery.event,
+        run_step_id: delivery.run_step_id ?? null,
+      }));
+      return { sessionId: resolution.sessionId, resumed: true };
+    } catch (error) {
+      if (!sessionCannotAcceptInput(error) || attempt > 0) throw error;
+      console.log(JSON.stringify({
+        diag: "session_pointer_stale",
+        session_id: resolution.sessionId,
+        run_id: runId,
+        error: String(error).slice(0, 200),
+      }));
+      await forgetQuietly(runSessionKey(runId));
+      return deliverToRun(delivery, attempt + 1);
+    }
   }
 
   console.log(JSON.stringify({
     diag: "starting_session",
     event: delivery.event,
-    run_id: delivery.run_id,
+    run_id: runId,
     run_step_id: delivery.run_step_id ?? null,
-    takeover_of: claim.previous ?? null,
-    claimed: claim.claimed,
   }));
 
   let session;
   try {
-    // Awaited rather than fired and forgotten: a failure here becomes a non-200,
-    // which is what makes Manifestly's delivery retry meaningful.
-    session = await anthropic().beta.sessions.create({
-      agent: process.env.CMA_AGENT_ID,
-      environment_id: process.env.CMA_ENVIRONMENT_ID,
-      vault_ids: [process.env.CMA_VAULT_ID],
-      title: `Manifestly run ${delivery.run_id} step ${delivery.run_step_id}`,
-      metadata: { manifestly_run_id: String(delivery.run_id) },
-      initial_events: [
-        { type: "user.message", content: [{ type: "text", text: assignmentBrief(delivery) }] },
-      ],
-    });
+    session = await createSession(delivery);
   } catch (error) {
-    // Without this the run is suppressed for the whole TTL by a claim held for
-    // a session that does not exist, which is the window the agent was meant to
-    // be working in.
-    if (claim.claimed) await releaseQuietly(delivery.run_id);
+    // Holding the create lock for a session that does not exist would suppress
+    // every delivery for the run until it expired, which is the window the
+    // agent was meant to be working in.
+    await forgetQuietly(createLockKey(runId));
     throw error;
   }
 
-  if (claim.claimed) {
-    await recordQuietly(delivery.run_id, session.id);
-  }
-
-  return Response.json({ session_id: session.id });
+  await refreshPointer(runId, session.id);
+  return { sessionId: session.id, resumed: false };
 }
 
-/**
- * The claim prevents duplicate work; it is not a safety gate, and the
- * difference decides how it fails. Suppressing on an unreachable store would
- * silently stop the agent running at all, which is worse than the duplicate
- * sessions we have today. So an unavailable store degrades to the old
- * behaviour and says so loudly, rather than failing closed into silence.
- *
- * Duplicate external writes are the real hazard, and the durable answer to
- * those is idempotency at the action, not only at the trigger.
- */
-async function claimForDelivery(delivery) {
-  if (!storeIsConfigured()) {
-    console.log(JSON.stringify({ diag: "claim_store_unconfigured", run_id: delivery.run_id }));
-    return { proceed: true, claimed: false };
-  }
+// Awaited rather than fired and forgotten: a failure here becomes a non-200,
+// which is what makes Manifestly's delivery retry meaningful.
+async function createSession(delivery) {
+  return anthropic().beta.sessions.create({
+    agent: process.env.CMA_AGENT_ID,
+    environment_id: process.env.CMA_ENVIRONMENT_ID,
+    vault_ids: [process.env.CMA_VAULT_ID],
+    title: `Manifestly run ${delivery.run_id}`,
+    metadata: { manifestly_run_id: String(delivery.run_id) },
+    initial_events: [
+      { type: "user.message", content: [{ type: "text", text: assignmentBrief(delivery, false) }] },
+    ],
+  });
+}
+
+// Sending into a session that is mid-turn is not an error: the platform queues
+// the input and delivers it when the turn ends. That is what makes one session
+// per run possible at all, and it is why nothing here checks session status.
+async function sendToSession(sessionId, delivery) {
+  return anthropic().beta.sessions.events.send(sessionId, {
+    events: [
+      { type: "user.message", content: [{ type: "text", text: assignmentBrief(delivery, true) }] },
+    ],
+  });
+}
+
+async function refreshPointer(runId, sessionId) {
   try {
-    const claim = await claimRun(store, delivery.run_id, CLAIM_TTL_SECONDS, sessionIsRunning);
-    return { ...claim, claimed: claim.proceed };
+    await store.set(runSessionKey(runId), sessionId, SESSION_POINTER_TTL_SECONDS);
   } catch (error) {
+    // The session exists and has the work; failing the delivery now would
+    // retry it into a second session, which is the duplicate this prevents.
     console.log(JSON.stringify({
-      diag: "claim_store_unavailable",
-      run_id: delivery.run_id,
+      diag: "session_pointer_write_failed",
+      run_id: runId,
+      session_id: sessionId,
       error: String(error).slice(0, 200),
     }));
-    return { proceed: true, claimed: false };
   }
 }
 
-async function recordQuietly(runId, sessionId) {
+async function forgetQuietly(key) {
   try {
-    await store.set(runClaimKey(runId), sessionId, CLAIM_TTL_SECONDS);
+    await store.release(key);
   } catch (error) {
-    // The session exists and is doing the work; failing the delivery now would
-    // retry it and produce the duplicate this whole path exists to avoid.
-    console.log(JSON.stringify({ diag: "claim_record_failed", run_id: runId, session_id: sessionId, error: String(error).slice(0, 200) }));
-  }
-}
-
-async function releaseQuietly(runId) {
-  try {
-    await store.release(runClaimKey(runId));
-  } catch (error) {
-    console.log(JSON.stringify({ diag: "claim_release_failed", run_id: runId, error: String(error).slice(0, 200) }));
+    console.log(JSON.stringify({ diag: "key_release_failed", key, error: String(error).slice(0, 200) }));
   }
 }
 
@@ -157,9 +213,11 @@ async function releaseQuietly(runId) {
  * this brief says which run and says nothing about what the work is: that
  * lives in the workflow's own step instructions.
  */
-function assignmentBrief(delivery) {
+function assignmentBrief(delivery, resumed) {
   return [
-    `Manifestly has work waiting for you (${delivery.event}).`,
+    resumed
+      ? `More Manifestly work has arrived on a run you are already working (${delivery.event}).`
+      : `Manifestly has work waiting for you (${delivery.event}).`,
     `run_id=${delivery.run_id}`,
     `run_step_id=${delivery.run_step_id ?? "(not specified, find your own assignments in the run)"}`,
     `department_id=${delivery.department_id}`,

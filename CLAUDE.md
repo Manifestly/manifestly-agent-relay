@@ -17,16 +17,16 @@ Five required in production, all set through the Vercel CLI (see below):
 - `ANTHROPIC_API_KEY`: the key sessions are created with. Scope it to one workspace
 - `CMA_AGENT_ID` / `CMA_ENVIRONMENT_ID` / `CMA_VAULT_ID`: what every session is started from
 
-Two more for the single-flight claim, supplied by the Upstash Redis marketplace integration under either spelling:
+Two more so a run can find its session, supplied by the Upstash Redis marketplace integration under either spelling:
 
 - `KV_REST_API_URL` or `UPSTASH_REDIS_REST_URL`
 - `KV_REST_API_TOKEN` or `UPSTASH_REDIS_REST_TOKEN`
 
-Without them the relay still runs and still starts sessions. It logs `claim_store_unconfigured` and reverts to one session per delivery, which is the duplicate behaviour Single Flight Per Run exists to stop.
+Without them the relay still runs and still starts sessions. It logs `session_store_unconfigured` and reverts to one session per delivery, which is the behaviour One Session Per Run exists to replace.
 
 ## Architecture
 
-The relay is a pure function of request, environment, and one claim key. No database of its own, no filesystem, no in-memory state across invocations.
+The relay is a pure function of request, environment, and the run's session pointer. No database of its own, no filesystem, no in-memory state across invocations.
 
 The state lives where it belongs. The **Run** in Manifestly holds the process, meaning step completion, recorded data, comments, approval status, and the review decisions with their snapshots. The **Execution** in Manifestly holds the delivery: request body, response code, response body, which means the `session_id` this handler returns is already recorded against the run that caused it. The **Session** at Anthropic holds the agent's transcript.
 
@@ -34,35 +34,34 @@ That closes the audit chain without the relay remembering anything: Run, then Ex
 
 ### The one exception, and why it is not one
 
-The relay holds a single short-lived key per run, in Redis, to stop several deliveries starting several sessions for the same run. That looks like the thing this section forbids and is not, for a reason worth keeping straight.
+The relay holds one key per run in Redis, naming the session that belongs to that run. That looks like the thing this section forbids and is not, for a reason worth keeping straight.
 
-The Run records **what work happened**. The claim records **that a process is currently working**. Those are different facts with different lifetimes. A Run should not carry a column meaning "a session is in flight": it is true for minutes, it is wrong the moment a session dies, and nothing would ever correct it. A key with a TTL is the right home precisely because expiry is what makes a crashed session self-healing rather than a permanently stuck run.
+The Run records **what work happened**. The pointer records **where the agent's continuous context for this run lives**, which is a fact about Anthropic's side of the boundary, not about the process. A Run should not carry a column holding another vendor's session id: it means nothing to Manifestly, no Manifestly feature reads it, and the Execution already records the `session_id` this handler returns, which is what closes the audit chain.
 
 So the rule still stands, restated: **the day this needs a database for anything describing the work is the day something has moved into it that belongs in the Run.** Coordination state about in-flight processing is not that.
 
-## Single Flight Per Run
+## One Session Per Run
 
-Several deliveries can name one run within milliseconds. A rejection reopens N steps, an approval unblocks a section, a comment arrives while either is in flight. Every one of them used to create its own session.
+The agent is a participant on a run, not a function invoked once per step. It holds one session for the life of the run, and every delivery for that run is sent into it, while humans and other agents work the same run alongside it. A rejection reopening N steps, an approval unblocking a section, a comment arriving while either is in flight: all of them reach the session the agent is already thinking in.
 
-This is not theoretical. Three sessions once picked up the same step, two of them posting near-identical plans five seconds apart, all three intending to file the same five GitHub issues. Only an unrelated network restriction stopped it being fifteen. Note also that `comment_created` is an agent event, so a person holding a normal conversation in run comments spawns a session per message.
+That is the point, and the deduplication is a consequence rather than the goal. The agent that handled step 3 is the one that sees step 4, so it knows what it already read and already decided instead of rediscovering the run from nothing.
 
-`api/_claim.js` decides; `api/_store.js` is the Redis behind it, via Upstash's own `@upstash/redis` client rather than hand-rolled HTTP, so the one part that talks to a third party is the vendor's code against the vendor's service. The mechanism is `SET key value NX EX`, which is atomic, so of N simultaneous callers exactly one proceeds.
+The failure this replaced was not theoretical. Three sessions once picked up the same step, two of them posting near-identical plans five seconds apart, all three intending to file the same five GitHub issues. Only an unrelated network restriction stopped it being fifteen. Note also that `comment_created` is an agent event, so a person holding a normal conversation in run comments used to spawn a session per message.
 
-The decision logic is unit-tested against an in-memory implementation of those semantics, and the store was additionally driven against the real Upstash instance: three concurrent claims, one winner, plus takeover, release and TTL expiry.
+`api/_session.js` decides; `api/_store.js` is the Redis behind it, via Upstash's own `@upstash/redis` client rather than hand-rolled HTTP, so the one part that talks to a third party is the vendor's code against the vendor's service.
 
-**Suppressing a delivery loses nothing, and that is what makes this safe.** The payload carries ids only and the agent reads live run state through MCP, so the surviving session sees everything the suppressed ones pointed at. This is the ids-only payload paying for itself.
+**Two keys, because their lifetimes are incompatible.** `agent:run:<id>:session` names the session and lives as long as the run. `agent:run:<id>:creating` is a lock held across one `sessions.create` call and expires on its own, so a crashed invocation costs one delivery rather than wedging the run. These were one key once, governed by the lock's short TTL, and that is exactly why a run whose steps completed over a morning accumulated a session per step.
 
-Three things that decide the shape, all read from the API rather than assumed:
+**Sending into a busy session is not an error.** The platform queues an input sent while the agent is mid-turn and delivers it when the turn ends; queued inputs are flushed only when a turn dies from retry exhaustion. Nothing in the resolver reads session status, and that absence is deliberate.
 
-- **There is no append.** Session events are read-only and `sessions.update` touches only tools, mcp_servers, budget and metadata. Input reaches a session only at `create`. So deliveries are folded into one session by being dropped, not by being delivered into it.
-- **An agent cannot end its own session.** `end_turn` ends a turn. The session then sits `idle` waiting for input a fire-and-forget trigger never sends.
-- **Status is readable.** `running`, `idle`, `terminated`, `rescheduling`. So "is the holder still working" is a fact to read rather than a timeout to guess, and `running` is the only suppress condition. Because sessions start `idle`, a status check alone would let a second delivery conclude the first had finished, which is why the claim covers the create-to-running gap.
+Two things that decide the shape, both read from the API:
 
-**If the sessions API ever gains a way to post an event into a running session, redo this.** One session per run with appends is strictly better: nothing is dropped, and the claim degrades to a lookup.
+- **Appending is `beta.sessions.events.send`.** A prior version of this document asserted flatly that session events were read-only and that input reached a session only at `create`, and named that as one of three facts "read from the API rather than assumed". It was assumed. `sessions.events` carries `list send stream toolRunner`; `send` opens a new thread in the session, which is why `threads` has `retrieve`/`list`/`archive` and no `create`. The whole suppression design existed because of that unchecked claim, and this document had already named the discovery of an append as the trigger to redo it.
+- **An agent cannot end its own session.** `end_turn` ends a turn. The session then sits `idle`, holding the run's context for the next delivery, which is now what we want rather than something to clean up.
 
-**The claim is not a safety gate and must not fail closed.** An unreachable store degrades to the old behaviour and logs `claim_store_unavailable`, because suppressing on a store outage would stop the agent running at all, which is worse than the duplicates. The durable answer to duplicate *external writes* is idempotency at the action, not only at the trigger.
+**The pointer is not a safety gate and must not fail closed.** An unreachable store degrades to one session per delivery and logs `session_store_unavailable`, because refusing to act on a store outage would stop the agent working at all, which is worse than duplicate sessions. The durable answer to duplicate *external writes* is idempotency at the action, not only at the trigger.
 
-`CLAIM_TTL_SECONDS` is a backstop, not the mechanism, since the status check governs while a session id is held. It is provisional at one hour, and the `suppressed_duplicate` log is what should replace it with a measured value rather than another guess.
+**A delivery is never dropped.** Where the old design answered a losing race with 204 and discarded the delivery, a delivery that cannot reach a session now answers 503, so Manifestly's retry is what resolves it.
 
 
 ## Verify Over The Raw Bytes
