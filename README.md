@@ -8,9 +8,9 @@ It is about forty lines. Manifestly cannot call the Anthropic API directly, beca
 
 1. Verifies the `X-Manifestly-Signature` header against the raw request body.
 2. Logs and ignores any delivery that does not name a run.
-3. Takes an atomic claim on that run, and suppresses the delivery if a session for it is already running.
-4. Otherwise starts a session of your configured agent, passing the run and step ids.
-5. Returns 200 only if the session was created, so a failure is retried.
+3. Looks up the session that belongs to that run.
+4. Sends the delivery into that session, or starts one if the run does not have one yet.
+5. Returns 200 only if the delivery reached a session, so a failure is retried.
 
 The delivery carries ids and nothing else. The agent reads the run through the Manifestly MCP server, which means the instructions for the work live in your workflow's step text, not in this code. Nothing here knows what process it triggered.
 
@@ -57,9 +57,13 @@ Roles are still worth using, because they are portable: a workflow exported as a
 
 ## What it deliberately does not do
 
-**One session per run, not per delivery.** Several deliveries can name the same run within milliseconds, and each used to start its own session. The relay now takes an atomic claim per run in Redis and suppresses a delivery while the session holding that claim is still `running`. Nothing is lost by suppressing: the payload carries ids only and the agent reads live run state, so the surviving session sees whatever the suppressed deliveries pointed at.
+**One session per run, for the life of the run.** The agent is a participant on a run, not a function invoked per step. It keeps one session while humans and other agents work that run alongside it, and every delivery -- an assignment, an approval, a rejection, a comment -- is sent into it. So the agent remembers within a run what it has already looked at and already decided, instead of rediscovering the run from nothing on each step.
 
-This needs the two Upstash variables. Without them the relay logs `claim_store_unconfigured` and reverts to one session per delivery.
+Redis holds the run's session id. That pointer lives as long as the run; a separate short-lived key guards the one moment two deliveries could both create a session for a run that has none yet.
+
+Deliveries arriving while the agent is mid-turn are not a problem to arbitrate: the platform queues an input sent into a running session and delivers it when the turn ends. Nothing here reads session status.
+
+This needs the two Upstash variables. Without them the relay logs `session_store_unconfigured` and reverts to one session per delivery.
 
 **Nothing about your process.** No retries of its own, no business logic, no knowledge of what the agent is for.
 

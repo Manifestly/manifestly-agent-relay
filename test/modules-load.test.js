@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-// The suite imports _claim and _signature, and until this file existed it
+// The suite imports _session and _signature, and until this file existed it
 // imported neither of the two modules Vercel actually runs. A syntax error, a
 // wrong import path or a renamed export in agent-hook.js or _store.js passed
 // CI green and failed on the first real delivery.
@@ -15,11 +15,11 @@ test("the handler module loads and exports POST", async () => {
   assert.equal(typeof mod.POST, "function", "Vercel routes the request to POST");
 });
 
-test("the store module loads and exposes the surface _claim.js calls", async () => {
+test("the store module loads and exposes the surface _session.js calls", async () => {
   const { store, storeIsConfigured } = await import("../api/_store.js");
   assert.equal(typeof storeIsConfigured, "function");
-  for (const method of ["setIfAbsent", "get", "set", "release", "swapIfHolder"]) {
-    assert.equal(typeof store[method], "function", `store.${method} is called by the claim`);
+  for (const method of ["setIfAbsent", "get", "set", "release"]) {
+    assert.equal(typeof store[method], "function", `store.${method} is called by the resolver`);
   }
 });
 
