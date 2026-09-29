@@ -108,7 +108,17 @@ Two consequences. Publishing a reference implementation of a signature check mea
 
 ## Deployment
 
-Deploys are manual CLI uploads. The repo is owned by the Manifestly GitHub org and the Vercel project is on a personal Hobby account, and Vercel's Git integration for organization-owned repositories is a paid-team feature. So there is no auto-deploy on push, and a code change needs `npx vercel deploy --prod` run by hand.
+Deploys are manual CLI uploads. The repo is owned by the Manifestly GitHub org and the Vercel project is on a personal Hobby account, and `vercel git connect` refuses with a 409: "The repository is private and owned by an organization, which is not supported on the Hobby plan." So there is no auto-deploy on push, and a code change needs `npx vercel deploy --prod` run by hand.
+
+That error is the last of three, and the earlier two look like the answer without being it. With no GitHub login connection on the Vercel account it reports needing one; with the connection but the Vercel GitHub App not installed on the org it reports a typo or missing access. Only after both are fixed does the plan restriction surface. `gh api /orgs/Manifestly/installations` lists which apps the org actually has.
+
+**A merged PR is not deployed, and nothing says so.** The alias keeps serving the previous build, every check on the PR is green, and `/version` does not exist here to contradict it. A merge once sat undeployed while a scheduled workflow was hours from running against the old code; it was caught only by noticing that the newest production deployment was seven hours old against a merge made minutes earlier. After merging, deploy and confirm the alias moved:
+
+```bash
+git checkout main && git pull --ff-only
+npx vercel deploy --prod
+npx vercel ls          # newest Production entry should be seconds old
+```
 
 **A CLI deploy is attributed to the HEAD commit's author, not to the CLI user.** `vercel whoami` showing the account that owns the project is not enough: if the commit author's email is not on that Vercel account, the deployment is created and immediately **Blocked**, with `vercel inspect` reporting "the commit author doesn't have permission to create deployments for this project". The notification email leads with "Upgrade to Pro", which is not the fix.
 
@@ -118,7 +128,9 @@ This repo therefore pins `user.email` locally to the address on the Vercel accou
 git config user.email mark@manifest.ly
 ```
 
-It bit us once when a global git identity changed between deploys: twelve commits had one address, the next three had another, and the first deploy after that was blocked while every earlier one had passed. To ship without waiting on a corrected commit, deploy from a copy of the tree with no `.git` directory; with no git metadata there is no author to check.
+It bit us once when a global git identity changed between deploys: twelve commits had one address, the next three had another, and the first deploy after that was blocked while every earlier one had passed.
+
+The local pin does not cover merge commits. GitHub authors those server-side with the merging account's primary email, so a merge made in the web UI arrives with an address this repo's config never touched, and deploying it blocks exactly as an unpinned commit would. The durable fix is to add every address you commit or merge under to the Vercel account's verified emails, rather than to pin harder. To ship before that is sorted, deploy from a copy of the tree with no `.git` directory; with no git metadata there is no author to check.
 
 Only the **production alias** is public. Deployment-specific URLs sit behind Vercel Authentication, which answers with a 401 that looks exactly like this relay's own rejection. Read the body before concluding the signature check ran.
 
