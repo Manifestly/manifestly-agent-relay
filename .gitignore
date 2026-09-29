@@ -4,3 +4,7 @@ node_modules/
 .vercel/
 .vercel
 agent.json
+.env*
+.agents/
+.claude/
+skills-lock.json
