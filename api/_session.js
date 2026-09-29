@@ -49,3 +49,18 @@ export async function resolveSession(store, runId, options) {
 
   return { action: "defer" };
 }
+
+/**
+ * Whether a failed send means "this session cannot accept input again", in
+ * which case the pointer is stale and the run needs a new session.
+ *
+ * An allowlist rather than a denylist, so anything unrecognised is rethrown and
+ * retried. Only 404 was handled first, which would have left an archived or
+ * terminated session failing every delivery for the rest of the run. Auth
+ * failures, throttling and server errors say nothing about the session, and
+ * recreating on them would answer a missing key or a rate limit by starting a
+ * second session for the run.
+ */
+export function sessionCannotAcceptInput(error) {
+  return [400, 404, 409, 410].includes(error?.status);
+}

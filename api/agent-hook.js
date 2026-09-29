@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { signatureIsValid } from "./_signature.js";
-import { resolveSession, runSessionKey, createLockKey } from "./_session.js";
+import { resolveSession, runSessionKey, createLockKey, sessionCannotAcceptInput } from "./_session.js";
 import { store, storeIsConfigured } from "./_store.js";
 
 // Deliberately not an allowlist of event names. An agent hook receives only
@@ -124,7 +124,7 @@ async function deliverToRun(delivery, attempt = 0) {
       }));
       return { sessionId: resolution.sessionId, resumed: true };
     } catch (error) {
-      if (!sessionIsGone(error) || attempt > 0) throw error;
+      if (!sessionCannotAcceptInput(error) || attempt > 0) throw error;
       console.log(JSON.stringify({
         diag: "session_pointer_stale",
         session_id: resolution.sessionId,
@@ -182,10 +182,6 @@ async function sendToSession(sessionId, delivery) {
       { type: "user.message", content: [{ type: "text", text: assignmentBrief(delivery, true) }] },
     ],
   });
-}
-
-function sessionIsGone(error) {
-  return error?.status === 404;
 }
 
 async function refreshPointer(runId, sessionId) {
