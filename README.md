@@ -37,6 +37,8 @@ Create an environment, then an agent whose `mcp_servers` lists your Manifestly M
 
 **Back in Manifestly.** Set this relay's URL as the agent's endpoint, then assign steps to the agent.
 
+Inference is billed to your own Anthropic account, not through Manifestly. What a run costs depends entirely on what your workflow asks the agent to do, so watch the first few before scheduling anything daily.
+
 ## Assigning steps, and the one trap
 
 Assign the step to the agent's membership directly, or to a role with **exactly one member**.
@@ -55,17 +57,26 @@ Roles are still worth using, because they are portable: a workflow exported as a
 
 **Only the production alias is public.** Deployment-specific URLs sit behind platform authentication, which answers with a 401 that looks exactly like this relay's own rejection. Use the alias, and read the body before assuming the signature check ran.
 
+## One session per run
+
+A run gets one agent session for its life, and every delivery for that run is sent into it: an assignment, an approval, a rejection, a comment. The agent stays on the run rather than being invoked per step, so it remembers what it already read and already decided.
+
+This needs the two Upstash variables. Without them the relay logs `session_store_unconfigured` and falls back to one session per delivery, which works but costs more and loses that continuity. `CLAUDE.md` has the reasoning and the failure modes.
+
 ## What it deliberately does not do
 
-**One session per run, for the life of the run.** The agent is a participant on a run, not a function invoked per step. It keeps one session while humans and other agents work that run alongside it, and every delivery -- an assignment, an approval, a rejection, a comment -- is sent into it. So the agent remembers within a run what it has already looked at and already decided, instead of rediscovering the run from nothing on each step.
+Nothing about your process. No retries of its own, no business logic, no knowledge of what the agent is for. Everything describing the work lives in your workflow's step text.
 
-Redis holds the run's session id. That pointer lives as long as the run; a separate short-lived key guards the one moment two deliveries could both create a session for a run that has none yet.
+## Keeping your copy current
 
-Deliveries arriving while the agent is mid-turn are not a problem to arbitrate: the platform queues an input sent into a running session and delivers it when the turn ends. Nothing here reads session status.
+You own your copy, so nothing here updates itself. Configuration is entirely environment variables and there is no code you need to change, which means a fork does not drift and pulling updates stays clean:
 
-This needs the two Upstash variables. Without them the relay logs `session_store_unconfigured` and reverts to one session per delivery.
+```
+git remote add upstream https://github.com/Manifestly/manifestly-agent-relay
+git fetch upstream && git merge upstream/main
+```
 
-**Nothing about your process.** No retries of its own, no business logic, no knowledge of what the agent is for.
+Worth doing occasionally rather than never. This has shipped correctness fixes that a copy taken beforehand does not have, and the relay cannot tell you it is missing one. `CHANGELOG.md` lists behaviour changes, so you can tell in a few seconds whether yours matters.
 
 ## Tests
 

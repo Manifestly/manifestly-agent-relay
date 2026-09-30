@@ -104,15 +104,15 @@ The agent's system prompt, model, tools and MCP servers live in `agent.yaml`. `b
 
 It is meant to be handed to customers. No account ids, no workspace names, no deployment URLs, no anything specific to our own setup. Those are environment variables and stay that way.
 
-Two consequences. Publishing a reference implementation of a signature check means owning its correctness for everyone who forks it, and forks do not receive fixes. And the README is written for someone setting this up for the first time, while this file is written for whoever changes it next; do not merge the two.
+Two consequences. Publishing a reference implementation of a signature check means owning its correctness for everyone who copies it, and a copy does not receive fixes: behaviour changes belong in `CHANGELOG.md`, which is the only way a reader can tell a stale copy from a current one. And the README is written for someone setting this up for the first time, while this file is written for whoever changes it next; do not merge the two, and do not tell the same story in both.
 
 ## Deployment
 
-Deploys are manual CLI uploads. The repo is owned by the Manifestly GitHub org and the Vercel project is on a personal Hobby account, and `vercel git connect` refuses with a 409: "The repository is private and owned by an organization, which is not supported on the Hobby plan." So there is no auto-deploy on push, and a code change needs `npx vercel deploy --prod` run by hand.
+Whether a merge deploys itself depends on whether the Vercel project is connected to the repository. If it is not, `npx vercel deploy --prod` has to be run by hand after every merge, and the rest of this section is about the ways that goes wrong.
 
-That error is the last of three, and the earlier two look like the answer without being it. With no GitHub login connection on the Vercel account it reports needing one; with the connection but the Vercel GitHub App not installed on the org it reports a typo or missing access. Only after both are fixed does the plan restriction surface. `gh api /orgs/Manifestly/installations` lists which apps the org actually has.
+`vercel git connect` fails with three different errors in sequence, and the first two read like the answer without being it: no GitHub login connection on the Vercel account, then the Vercel GitHub App not installed on the organisation, and only then any plan restriction. `gh api /orgs/<org>/installations` lists what is actually installed.
 
-**A merged PR is not deployed, and nothing says so.** The alias keeps serving the previous build, every check on the PR is green, and `/version` does not exist here to contradict it. A merge once sat undeployed while a scheduled workflow was hours from running against the old code; it was caught only by noticing that the newest production deployment was seven hours old against a merge made minutes earlier. After merging, deploy and confirm the alias moved:
+**When deploys are manual, a merged PR is not deployed, and nothing says so.** The alias keeps serving the previous build, every check on the PR is green, and `/version` does not exist here to contradict it. A merge once sat undeployed while a scheduled workflow was hours from running against the old code; it was caught only by noticing that the newest production deployment was seven hours old against a merge made minutes earlier. After merging, deploy and confirm the alias moved:
 
 ```bash
 git checkout main && git pull --ff-only
@@ -122,10 +122,10 @@ npx vercel ls          # newest Production entry should be seconds old
 
 **A CLI deploy is attributed to the HEAD commit's author, not to the CLI user.** `vercel whoami` showing the account that owns the project is not enough: if the commit author's email is not on that Vercel account, the deployment is created and immediately **Blocked**, with `vercel inspect` reporting "the commit author doesn't have permission to create deployments for this project". The notification email leads with "Upgrade to Pro", which is not the fix.
 
-This repo therefore pins `user.email` locally to the address on the Vercel account:
+So pin `user.email` locally to an address verified on the Vercel account:
 
 ```bash
-git config user.email mark@manifest.ly
+git config user.email you@example.com
 ```
 
 It bit us once when a global git identity changed between deploys: twelve commits had one address, the next three had another, and the first deploy after that was blocked while every earlier one had passed.
@@ -136,7 +136,7 @@ Only the **production alias** is public. Deployment-specific URLs sit behind Ver
 
 ## Set Environment Variables From The CLI
 
-Both secrets pasted into Vercel's web form arrived truncated: a 32-character signing secret stored as 19, and an API key as a fragment. Neither failed at the time; they surfaced much later as unexplained 401s from two different systems.
+Why, and the symptom, are in the README. Two details that matter when changing things here:
 
 ```bash
 read -rs VALUE
@@ -150,13 +150,11 @@ Values added this way are stored as secrets and cannot be read back: `vercel env
 
 ## Managed Agents Constraints Worth Knowing
 
-**`mcp_toolset` defaults to `permission_policy: always_ask`.** That suspends every MCP call waiting for a confirmation event. Correct for an interactive agent and fatal for one started by a fire-and-forget webhook, because nobody is listening to answer. The symptom is an agent that emits its tool calls and goes idle having done nothing, with no error anywhere. Set `always_allow` explicitly; `agent.yaml` does and carries a comment saying why.
+The README lists the ones that bite during setup. These matter when changing `agent.yaml` or the session call.
 
-**The sandbox egress allowlist does not govern every network path the agent has.** Ordinary HTTP out of the sandbox is proxied and refused per host, with a `403` carrying `x-deny-reason: host_not_allowed` and a plain-text body naming the host. The agent's own `web_fetch` tool is not subject to it: asked for a URL the proxy refuses, `curl` gets the 403 and `web_fetch` returns the document.
+**Never remove `always_allow` from the `mcp_toolset`.** The platform default is `always_ask`, which suspends every MCP call waiting for a confirmation event that a fire-and-forget webhook has nobody to answer. The agent then emits its tool calls and goes idle having done nothing, with no error anywhere. `agent.yaml` sets it and carries a comment saying why.
 
-Two consequences. Do not treat the allowlist as a complete control on what the agent can reach, and when an agent reports a host as blocked, ask which path it tried. `app.manifest.ly` and `api.manifest.ly` are both refused on the proxied path, which also means the Manifestly MCP traffic is not travelling over it.
-
-**Vault credentials substitute into headers and bodies, never query strings.** A service that authenticates with `?key=...` receives the literal placeholder and returns its own auth error. Check whether it also accepts a header: Airbrake's documentation describes only the query parameter and accepts `Authorization: Bearer` perfectly well.
+**The sandbox egress allowlist does not govern every network path the agent has.** Ordinary HTTP out of the sandbox is proxied and refused per host, with a `403` carrying `x-deny-reason: host_not_allowed` and a plain-text body naming the host. The agent's own `web_fetch` tool is not subject to it: asked for a URL the proxy refuses, `curl` gets the 403 and `web_fetch` returns the document. So do not treat the allowlist as a complete control on what the agent can reach, and when an agent reports a host as blocked, ask which path it tried.
 
 **`vault_ids` is create-only.** Vaults attach when the session is created and cannot be added later, so a session started without one has an agent with no credentials and failures that read as confusion rather than as authentication.
 
@@ -166,4 +164,3 @@ Two consequences. Do not treat the allowlist as a complete control on what the a
 - Stage files by name; never `git add -A` or `git add .`
 - Keep the README's description of behavior in step with the code. It has already drifted once: it described an event allowlist for three commits after the allowlist was removed.
 
-Branch protection is not yet enabled, and everything here was pushed straight to the default branch during the spike. That was fine for a repo that did not exist yet and stopped being fine once it started receiving production webhooks. Enabling protection and requiring a PR is part of moving this off a personal Vercel account.
