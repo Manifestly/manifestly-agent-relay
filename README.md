@@ -39,13 +39,15 @@ Create an environment, then an agent whose `mcp_servers` lists your Manifestly M
 
 Inference is billed to your own Anthropic account, not through Manifestly. What a run costs depends entirely on what your workflow asks the agent to do, so watch the first few before scheduling anything daily.
 
-## Assigning steps, and the one trap
+## Assigning steps
 
-Assign the step to the agent's membership directly, or to a role with **exactly one member**.
+Assign the step to the agent directly, or to a role the agent belongs to. Both work, and which event arrives depends on which you chose, which is why this relay does not filter on event name.
 
-A role resolves to a single member when it has one, and that is what makes the delivery fire. Add a second member, a human backup for holiday cover say, and the role stops resolving to a single membership, the webhook silently stops firing, and the run sits there with no error anywhere. Adding a person to a role looks additive and is not.
+A role with exactly one member resolves to that member, and the delivery arrives as `step_assigned` or `step_became_applicable`. A role with several members does not resolve, and every AI agent in the role is notified with `step_role_ready`. Adding a human backup to a role alongside the agent is safe.
 
-Roles are still worth using, because they are portable: a workflow exported as a template carries the role name, so whoever imports it maps their own agent. A membership id does not port.
+Prefer a role. A workflow exported as a template carries the role name, so whoever imports it maps their own agent, or a person, onto the same role. A membership id does not port, and swapping the agent for a person is the whole argument for assigning work to a role rather than to a worker.
+
+**The one trap.** A step that is already assigned to a specific person produces no role notification at all. Role delivery and direct assignment are alternatives rather than layers, so an agent sitting in a role will never be woken for a step somebody has already taken. Header steps are never delivered either; assign the substep.
 
 ## Things that cost us a day
 

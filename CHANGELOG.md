@@ -29,3 +29,7 @@ Replaces an allowlist of event names, which silently ignored real deliveries twi
 ## Set `always_allow` on the MCP toolset
 
 `agent.yaml` only. The platform default is `always_ask`, which suspends every MCP call waiting for a confirmation event that a webhook-started agent has nobody to answer. Before this, the agent emitted its tool calls and went idle having done nothing, with no error anywhere. If you wrote your own agent definition rather than using this one, check it carries this.
+
+## Documentation correction, 30 September 2026
+
+No code change. The README previously said a step had to be assigned to the agent directly or to a role with **exactly one member**, and warned that adding a second member would silently stop delivery. That was true before Manifestly emitted `step_role_ready`, and it is no longer true: a role with several members notifies every AI agent in it. If you built a workflow around that warning, your roles can have as many members as you like.
