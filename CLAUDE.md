@@ -7,7 +7,7 @@ Receives the webhook Manifestly sends when a run step is assigned to an AI agent
 - `npm test`: Node's built-in runner, no framework. Zero test dependencies on purpose.
 - `./bin/agent-json`: render `agent.yaml` as the JSON body `/v1/agents` expects
 - `./bin/agent-apply`: sync `agent.yaml` to the live agent (needs `ANTHROPIC_API_KEY`, `CMA_AGENT_ID`)
-- `npx vercel deploy --prod`: deploy. See Deployment below for why this is manual
+- `npx vercel ls`: confirm a merge deployed. Deploys are automatic; see Deployment
 
 ## Environment Variables
 
@@ -108,29 +108,17 @@ Two consequences. Publishing a reference implementation of a signature check mea
 
 ## Deployment
 
-Whether a merge deploys itself depends on whether the Vercel project is connected to the repository. If it is not, `npx vercel deploy --prod` has to be run by hand after every merge, and the rest of this section is about the ways that goes wrong.
+The Vercel project is connected to this repository, so deploys are automatic. A push to a branch produces a Preview deployment; a merge to `main` produces a Production one. Confirm with `npx vercel ls`: after a merge the newest Production entry should be seconds old.
 
-`vercel git connect` fails with three different errors in sequence, and the first two read like the answer without being it: no GitHub login connection on the Vercel account, then the Vercel GitHub App not installed on the organisation, and only then any plan restriction. `gh api /orgs/<org>/installations` lists what is actually installed.
+**Every merge redeploys, including a documentation-only one.** The production alias moves to a new deployment each time. Harmless when the code is identical, but it means a production deployment being minutes old is not evidence that any code changed.
 
-**When deploys are manual, a merged PR is not deployed, and nothing says so.** The alias keeps serving the previous build, every check on the PR is green, and `/version` does not exist here to contradict it. A merge once sat undeployed while a scheduled workflow was hours from running against the old code; it was caught only by noticing that the newest production deployment was seven hours old against a merge made minutes earlier. After merging, deploy and confirm the alias moved:
+That connection is recent. This section used to describe deploying by hand, and three things from that period still matter.
 
-```bash
-git checkout main && git pull --ff-only
-npx vercel deploy --prod
-npx vercel ls          # newest Production entry should be seconds old
-```
+`vercel git connect` fails with three different errors in sequence, and the first two read like the answer without being it: no GitHub login connection on the Vercel account, then the Vercel GitHub App not installed on the organisation, and only then any plan restriction. `gh api /orgs/<org>/installations` lists what is actually installed. Worth having if the connection is ever lost, and worth knowing when a customer sets up their own copy.
 
-**A CLI deploy is attributed to the HEAD commit's author, not to the CLI user.** `vercel whoami` showing the account that owns the project is not enough: if the commit author's email is not on that Vercel account, the deployment is created and immediately **Blocked**, with `vercel inspect` reporting "the commit author doesn't have permission to create deployments for this project". The notification email leads with "Upgrade to Pro", which is not the fix.
+**A CLI deploy is attributed to the HEAD commit's author, not to the CLI user.** `vercel whoami` showing the account that owns the project is not enough: if the commit author's email is not on that Vercel account, `npx vercel deploy --prod` creates a deployment that is immediately **Blocked**, with `vercel inspect` reporting "the commit author doesn't have permission to create deployments for this project". The notification email leads with "Upgrade to Pro", which is not the fix. The fix is that every address you commit under is verified on the Vercel account; it bit us when a global git identity changed between deploys, twelve commits under one address and the next three under another. If a CLI deploy is ever needed and blocks, deploying from a copy of the tree with no `.git` directory removes the author to check.
 
-So pin `user.email` locally to an address verified on the Vercel account:
-
-```bash
-git config user.email you@example.com
-```
-
-It bit us once when a global git identity changed between deploys: twelve commits had one address, the next three had another, and the first deploy after that was blocked while every earlier one had passed.
-
-The local pin does not cover merge commits. GitHub authors those server-side with the merging account's primary email, so a merge made in the web UI arrives with an address this repo's config never touched, and deploying it blocks exactly as an unpinned commit would. The durable fix is to add every address you commit or merge under to the Vercel account's verified emails, rather than to pin harder. To ship before that is sorted, deploy from a copy of the tree with no `.git` directory; with no git metadata there is no author to check.
+Whether that check applies to git-triggered deploys is not established. The first merge after connecting deployed clean even though GitHub authored the merge commit server-side under an address this repo's config never set, which is the case the manual flow could not survive. One observation is not a rule, so do not rely on it either way.
 
 Only the **production alias** is public. Deployment-specific URLs sit behind Vercel Authentication, which answers with a 401 that looks exactly like this relay's own rejection. Read the body before concluding the signature check ran.
 
