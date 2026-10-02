@@ -4,6 +4,8 @@ Receives the webhook Manifestly sends when a run step is assigned to an AI agent
 
 It is about forty lines. Manifestly cannot call the Anthropic API directly, because the delivery body and headers are Manifestly's own shape, so something has to sit between them. This is that something.
 
+It is a reference implementation, not a service. You run your own copy, and it is yours to change. Nothing in the code is tied to a particular host: the handler is a standard Web `Request`/`Response` function and the only state is a Redis store reached over HTTP, so it runs unchanged on any platform that routes a request to a function. We deploy it to Vercel, which is why the deployment instructions and most of the hard-won operational notes below are Vercel's. Moving it elsewhere is a different deploy command, not different code.
+
 ## What it does
 
 1. Verifies the `X-Manifestly-Signature` header against the raw request body.
@@ -18,12 +20,20 @@ The delivery carries ids and nothing else. The agent reads the run through the M
 
 ## Deploy
 
+We use Vercel. Any platform that routes an HTTP request to a function works, and the only thing that changes is this section.
+
 ```
 npm install
 npx vercel deploy --prod
 ```
 
-Then set the environment variables from `.env.example` in the Vercel dashboard and redeploy.
+Set the environment variables from `.env.example` **through the CLI, not a dashboard**, then redeploy:
+
+```
+printf '%s' "$VALUE" | npx vercel env add NAME production
+```
+
+Use `printf` rather than `echo`, which appends a newline. Read the first entry under "Things that cost us a day" before deciding the web form is easier.
 
 ## Setting it up
 
