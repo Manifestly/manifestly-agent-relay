@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Lists the Managed Agents vaults, environments and agents on this account and
+# prints each in full. Read-only. Needs only ANTHROPIC_API_KEY; every id is
+# discoverable from the key, so nothing has to be known in advance.
+#
+# Vault reads do not return secret values.
+set -uo pipefail
+
+if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+  printf 'Anthropic API key (hidden): '
+  read -rs ANTHROPIC_API_KEY
+  printf '\n\n'
+  export ANTHROPIC_API_KEY
+fi
+
+api() {
+  curl -sS -w '\n__HTTP__%{http_code}\n' "https://api.anthropic.com/v1/$1" \
+    -H "x-api-key: $ANTHROPIC_API_KEY" \
+    -H "anthropic-version: 2023-06-01" \
+    -H "anthropic-beta: managed-agents-2026-04-01"
+}
+
+show() {
+  echo "================ $2  ($1)"
+  local out code body
+  out=$(api "$1")
+  code=$(printf '%s' "$out" | sed -n 's/^__HTTP__//p' | tail -1)
+  body=$(printf '%s' "$out" | sed '/^__HTTP__/d')
+  echo "HTTP $code"
+  if [ "$code" = "200" ]; then
+    printf '%s' "$body" | python3 -m json.tool 2>/dev/null || printf '%s\n' "$body"
+  else
+    printf '%s\n' "$body" | head -5
+  fi
+  echo
+}
+
+show "vaults" "VAULTS"
+show "environments" "ENVIRONMENTS"
+show "agents" "AGENTS"
+
+VAULT="${CMA_VAULT_ID:-}"
+if [ -z "$VAULT" ]; then
+  VAULT=$(api "vaults" | sed '/^__HTTP__/d' \
+    | python3 -c "import json,sys; d=json.load(sys.stdin).get('data',[]); print(d[0]['id'] if len(d)==1 else '')" 2>/dev/null)
+fi
+if [ -n "$VAULT" ]; then
+  show "vaults/$VAULT/credentials" "CREDENTIALS IN $VAULT"
+else
+  echo "Several vaults, or none. Set CMA_VAULT_ID to list one vault's credentials."
+fi

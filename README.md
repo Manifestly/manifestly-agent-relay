@@ -41,9 +41,18 @@ Use `printf` rather than `echo`, which appends a newline. Read the first entry u
 
 Then take the webhook signing secret from Settings > Account. Two things to know about it: it is account-level rather than per-hook, and it is shown only when created or rotated. If nobody saved it, the only way to obtain it is to rotate, which invalidates it for every other webhook consumer in the account at the same moment. Check what else is subscribed before you rotate.
 
-**In Anthropic.** Create a vault holding two credentials: a `static_bearer` keyed to your Manifestly MCP server URL, holding the agent's API key, and an `environment_variable` for any other service the agent needs to reach. Vaulted secrets are substituted at egress and never enter the agent's sandbox.
+**In Anthropic.** Create a vault, an environment and an agent. `bin/cma-inspect` lists all three for your account and needs nothing but an API key, so run it first and after every change.
 
-Create an environment, then an agent whose `mcp_servers` lists your Manifestly MCP server and whose `tools` includes a matching `mcp_toolset` entry. Keep the agent's system prompt free of any single process's details: it should say how the agent works, while each workflow's step text says what the work is. That is what lets one agent serve every workflow.
+The vault holds one credential per service the agent reaches. The two credential types are not interchangeable and the names do not suggest what they do:
+
+- `static_bearer` is for MCP servers only. Its one field is `mcp_server_url`. It cannot authenticate an ordinary host.
+- `environment_variable` is for everything else. Despite the name, it is not a variable the agent can read: it carries `injection_location` and its own `networking.allowed_hosts`, and the value is injected into request headers at egress for those hosts only. The agent never sees it, which matters if your agent writes long prose anywhere a secret could be echoed into.
+
+So the Manifestly MCP credential is a `static_bearer` keyed to your MCP server URL, and every other service is an `environment_variable` scoped to its host. `bin/cma-credential` creates one without the value ever reaching your shell history or the process table.
+
+**The allowlist is two layers and both are needed.** The environment's `config.networking.allowed_hosts` decides whether the sandbox may reach a host at all; the credential's own `networking.allowed_hosts` decides which host its secret is injected for. Miss the first and you get `403` with `x-deny-reason: host_not_allowed`. Miss the second and you get the service's own `401`.
+
+Then create an agent whose `mcp_servers` lists your Manifestly MCP server and whose `tools` includes a matching `mcp_toolset` entry. Keep the agent's system prompt free of any single process's details: it should say how the agent works, while each workflow's step text says what the work is. That is what lets one agent serve every workflow.
 
 **Back in Manifestly.** Set this relay's URL as the agent's endpoint, then assign steps to the agent.
 

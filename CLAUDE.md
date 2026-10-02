@@ -7,6 +7,8 @@ Receives the webhook Manifestly sends when a run step is assigned to an AI agent
 - `npm test`: Node's built-in runner, no framework. Zero test dependencies on purpose.
 - `./bin/agent-json`: render `agent.yaml` as the JSON body `/v1/agents` expects
 - `./bin/agent-apply`: sync `agent.yaml` to the live agent (needs `ANTHROPIC_API_KEY`, `CMA_AGENT_ID`)
+- `./bin/cma-inspect`: list the vaults, environments, agents and credentials on the account (needs `ANTHROPIC_API_KEY` only)
+- `./bin/cma-credential`: add an `environment_variable` credential to a vault without the value entering shell history
 - `npx vercel ls`: confirm a merge deployed. Deploys are automatic; see Deployment
 
 ## Environment Variables
@@ -143,6 +145,17 @@ The README lists the ones that bite during setup. These matter when changing `ag
 **Never remove `always_allow` from the `mcp_toolset`.** The platform default is `always_ask`, which suspends every MCP call waiting for a confirmation event that a fire-and-forget webhook has nobody to answer. The agent then emits its tool calls and goes idle having done nothing, with no error anywhere. `agent.yaml` sets it and carries a comment saying why.
 
 **The sandbox egress allowlist does not govern every network path the agent has.** Ordinary HTTP out of the sandbox is proxied and refused per host, with a `403` carrying `x-deny-reason: host_not_allowed` and a plain-text body naming the host. The agent's own `web_fetch` tool is not subject to it: asked for a URL the proxy refuses, `curl` gets the 403 and `web_fetch` returns the document. So do not treat the allowlist as a complete control on what the agent can reach, and when an agent reports a host as blocked, ask which path it tried.
+
+**The vaults, environments and agents API, since none of this is in the docs we could find.** Everything is under `https://api.anthropic.com/v1/`, with `x-api-key`, `anthropic-version: 2023-06-01` and `anthropic-beta: managed-agents-2026-04-01`. `bin/cma-inspect` does the reads.
+
+- Discovery needs only the API key. `GET /vaults`, `GET /environments` and `GET /agents` list them, so no id has to be known in advance. The ids are not secret; only the key is.
+- Vault credentials hang off a sub-resource: `GET /vaults/{id}/credentials`. The vault object itself carries no credentials. Reads never return secret values.
+- **Updating an environment is `POST`, not `PATCH`, and it REPLACES the config.** `PATCH` returns 405. Send the whole `config` object back or you silently drop whatever you omitted, and dropping `allow_mcp_servers: true` cuts the agent off from MCP with no error anywhere. Read, modify, write.
+- The secret field on a credential create is `auth.secret_value`. The API names missing fields one at a time, so an empty body is a usable schema probe and creates nothing.
+
+**Credential types are a constraint, not a style choice.** `static_bearer` takes `mcp_server_url` and nothing else, so it cannot authenticate an ordinary host. `environment_variable` is the egress-substituted form for everything else, carrying `injection_location` and its own `networking.allowed_hosts`. The name misleads: the value is injected into headers at the proxy and never enters the sandbox, which is the property you want when the agent writes prose into systems people read. Mirror an existing credential's shape rather than reasoning from the names; the README's earlier wording read as though the two were alternatives and sent a reader to the wrong one.
+
+**Reaching a new host takes two allowlist entries.** The environment's `config.networking.allowed_hosts` permits egress to the host; the credential's own `networking.allowed_hosts` scopes which host its secret is injected for. The failure modes are distinguishable and worth knowing apart: `403` with `x-deny-reason: host_not_allowed` is the environment, `401` is the credential, and a `404` on a resource you expect to exist is usually the credential's own scope at the far end.
 
 **`vault_ids` is create-only.** Vaults attach when the session is created and cannot be added later, so a session started without one has an agent with no credentials and failures that read as confusion rather than as authentication.
 
