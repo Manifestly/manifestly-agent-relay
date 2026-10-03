@@ -82,7 +82,13 @@ Prefer a role. A workflow exported as a template carries the role name, so whoev
 
 A run gets one agent session for its life, and every delivery for that run is sent into it: an assignment, an approval, a rejection, a comment. The agent stays on the run rather than being invoked per step, so it remembers what it already read and already decided.
 
-This needs the two Upstash variables. Without them the relay logs `session_store_unconfigured` and falls back to one session per delivery, which works but costs more and loses that continuity. `CLAUDE.md` has the reasoning and the failure modes.
+This is also what stops the same work being done twice, which matters more than the continuity.
+
+**Manifestly's hook mechanism reports what happened. Scoping work and managing concurrency are yours.** That is a deliberate division and a reasonable one, but it means something concrete here: one step can produce several deliveries. An assignment and an applicability change are different facts about the same step, a step can become applicable more than once, and nothing in the delivery tells you another delivery for the same work is in flight. We have had a step produce two deliveries half an hour apart, with two sessions each working the whole thing and every outbound action taken twice. Nothing was corrupted only because the one write involved happened to be idempotent.
+
+The session pointer is this relay's answer: every delivery for a run resolves to one session, so a second delivery is a message to the agent already on the job rather than a second agent.
+
+**It needs the two Upstash variables, and without them you are opting out of that.** The relay logs `session_store_unconfigured` and falls back to one session per delivery, which is the behaviour described above. It still runs, and it costs more, but the thing you lose is the protection rather than a convenience. `CLAUDE.md` has the reasoning and the failure modes.
 
 ## What it deliberately does not do
 

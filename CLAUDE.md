@@ -42,6 +42,22 @@ The Run records **what work happened**. The pointer records **where the agent's 
 
 So the rule still stands, restated: **the day this needs a database for anything describing the work is the day something has moved into it that belongs in the Run.** Coordination state about in-flight processing is not that.
 
+## The Delivery Contract, And What It Leaves To Us
+
+**Manifestly's agent hook reports what happened. Scoping work and managing concurrency are the consumer's responsibility.** That is the stated position and it is a defensible one: the platform cannot know which deliveries a given consumer considers the same unit of work, and a dedup or lease imposed upstream would suppress true events for everyone else.
+
+What it means here is that several deliveries can describe one piece of work, and the relay is the thing that has to notice.
+
+- An assignment and an applicability change are separate facts about the same step, emitted by unrelated code paths that do not know about each other.
+- A step can become applicable more than once, and each transition is a delivery. We have seen one step transition four times, with two of those producing deliveries half an hour apart.
+- A delivery carries no indication that another delivery for the same work is in flight or already handled.
+
+When that happened to us, two sessions worked the same step and each did the whole thing, so every outbound action in it was taken twice. Nothing was corrupted only because the single write involved happened to be idempotent, which is luck rather than containment: the next collision may land on something that is not.
+
+So the single-flight behaviour in `_session.js` is not an optimisation. It is this relay's discharge of a responsibility the platform has explicitly handed us, and anything that weakens it is a correctness change rather than a performance one.
+
+The platform's side of the line is narrower than it sounds. It owes us deliveries that describe states the run was actually in. A delivery emitted from an intermediate value during a recompute, which is then corrected microseconds later in the same pass, is not something that happened, and that is a platform bug rather than something this relay should work around.
+
 ## One Session Per Run
 
 The agent is a participant on a run, not a function invoked once per step. It holds one session for the life of the run, and every delivery for that run is sent into it, while humans and other agents work the same run alongside it. A rejection reopening N steps, an approval unblocking a section, a comment arriving while either is in flight: all of them reach the session the agent is already thinking in.
