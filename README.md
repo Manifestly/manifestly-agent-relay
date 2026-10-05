@@ -46,9 +46,15 @@ Then take the webhook signing secret from Settings > Account. Two things to know
 The vault holds one credential per service the agent reaches. The two credential types are not interchangeable and the names do not suggest what they do:
 
 - `static_bearer` is for MCP servers only. Its one field is `mcp_server_url`. It cannot authenticate an ordinary host.
-- `environment_variable` is for everything else. Despite the name, it is not a variable the agent can read: it carries `injection_location` and its own `networking.allowed_hosts`, and the value is injected into request headers at egress for those hosts only. The agent never sees it, which matters if your agent writes long prose anywhere a secret could be echoed into.
+- `environment_variable` is for everything else. It carries `injection_location` and its own `networking.allowed_hosts`, and the real value is substituted into request headers at egress for those hosts only. The agent holds a placeholder, never the secret, which matters if your agent writes long prose anywhere a value could be echoed into.
 
-So the Manifestly MCP credential is a `static_bearer` keyed to your MCP server URL, and every other service is an `environment_variable` scoped to its host. `bin/cma-credential` creates one without the value ever reaching your shell history or the process table.
+**Name the variable for the scope it actually has.** The agent cannot read the secret, but it can read the variable's name, and it will reason from it. Ours reported its GitHub credential as read-only on the strength of a name ending `_READ_TOKEN`, which was correct at the time and would have been a confident falsehood the moment we widened the grant without renaming. A name that outlives its scope is a lie told to your own agent.
+
+So the Manifestly MCP credential is a `static_bearer` keyed to your MCP server URL, and every other service is an `environment_variable` scoped to its host. `bin/cma-credential` creates one without the value ever reaching your shell history or the process table. `bin/cma-credential-rm` retires one, which is a hard delete and worth doing before you revoke the secret at the far end rather than after, so the vault stops injecting a value that no longer works.
+
+**Credentials are independent objects, and they reach running sessions.** Each lives on its own and adding one cannot disturb the others, so there is no read-modify-write to get wrong here. A credential added after a session started still arrives: substitution is resolved per call rather than frozen at session start, so you can roll or revoke one on a live agent without restarting it. We added a credential more than seven hours into a session and the agent picked it up on its next request.
+
+**If your agent's tools include the agent toolset, it reaches these hosts with a shell.** The credential is not limited to something MCP-shaped: the agent runs `curl` and any HTTPS API inside the allowlist is reachable. That is more capability than "an environment variable for another service" suggests, and it is worth knowing before you decide what a credential is allowed to touch.
 
 **The allowlist is two layers and both are needed.** The environment's `config.networking.allowed_hosts` decides whether the sandbox may reach a host at all; the credential's own `networking.allowed_hosts` decides which host its secret is injected for. Miss the first and you get `403` with `x-deny-reason: host_not_allowed`. Miss the second and you get the service's own `401`.
 
@@ -75,6 +81,12 @@ Prefer a role. A workflow exported as a template carries the role name, so whoev
 **Your agent's MCP tools probably default to asking permission.** On Claude Managed Agents, `mcp_toolset` defaults to `permission_policy: always_ask`, which suspends every call waiting for a confirmation event. That is right for an interactive agent and fatal for one started by a webhook, because nobody is listening to answer. The symptom is an agent that emits its tool calls and goes idle having done nothing. Set `always_allow` explicitly.
 
 **Vaulted secrets reach headers and bodies, never query strings.** If a service authenticates with `?key=...`, the placeholder goes out literally and you get its own auth error back. Check whether the service also accepts a header: Airbrake's documentation describes only the query parameter, and it accepts `Authorization: Bearer` perfectly well.
+
+**A token authenticates as an identity, and everything it creates inherits that identity.** Our agent files issues with a repository-scoped token, and every issue it opens is attributed to the human who minted it. Nothing on the far side distinguishes agent-filed from person-filed. If that system is anyone's audit trail, the attribution your workflow carefully maintains is discarded at the boundary, so use a machine user or an app installation rather than a personal token. Deciding this after a hundred artifacts carry the wrong author is much more expensive than deciding it first.
+
+**Scope the token explicitly; do not infer its grant from an API response.** GitHub returns a `permissions` block reporting the repository role of the *account* a token authenticates as, not the token's own grant. Ours read `admin: true` while the token could do nothing but file issues. Read it as a warning about what a loosely scoped token would inherit, never as evidence of what this one can do. The only test of a write scope is a write.
+
+**Egress is a shared address, so unauthenticated calls are unreliable.** A rate limit keyed to the source address is spent by traffic that is not yours. We designed a visibility probe around an unauthenticated `404` and got `403 rate limit exceeded` instead, which proved nothing in either direction. Authenticate every call, including the ones that are only meant to establish a baseline.
 
 **Only the production alias is public.** Deployment-specific URLs sit behind platform authentication, which answers with a 401 that looks exactly like this relay's own rejection. Use the alias, and read the body before assuming the signature check ran.
 
