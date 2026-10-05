@@ -9,6 +9,7 @@ Receives the webhook Manifestly sends when a run step is assigned to an AI agent
 - `./bin/agent-apply`: sync `agent.yaml` to the live agent (needs `ANTHROPIC_API_KEY`, `CMA_AGENT_ID`)
 - `./bin/cma-inspect`: list the vaults, environments, agents and credentials on the account (needs `ANTHROPIC_API_KEY` only)
 - `./bin/cma-credential`: add an `environment_variable` credential to a vault without the value entering shell history
+- `./bin/cma-credential-rm`: remove a credential from a vault, after showing what it is and asking. Hard delete, no undo
 - `npx vercel ls`: confirm a merge deployed. Deploys are automatic; see Deployment
 
 ## Environment Variables

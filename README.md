@@ -50,7 +50,7 @@ The vault holds one credential per service the agent reaches. The two credential
 
 **Name the variable for the scope it actually has.** The agent cannot read the secret, but it can read the variable's name, and it will reason from it. Ours reported its GitHub credential as read-only on the strength of a name ending `_READ_TOKEN`, which was correct at the time and would have been a confident falsehood the moment we widened the grant without renaming. A name that outlives its scope is a lie told to your own agent.
 
-So the Manifestly MCP credential is a `static_bearer` keyed to your MCP server URL, and every other service is an `environment_variable` scoped to its host. `bin/cma-credential` creates one without the value ever reaching your shell history or the process table.
+So the Manifestly MCP credential is a `static_bearer` keyed to your MCP server URL, and every other service is an `environment_variable` scoped to its host. `bin/cma-credential` creates one without the value ever reaching your shell history or the process table. `bin/cma-credential-rm` retires one, which is a hard delete and worth doing before you revoke the secret at the far end rather than after, so the vault stops injecting a value that no longer works.
 
 **Credentials are independent objects, and they reach running sessions.** Each lives on its own and adding one cannot disturb the others, so there is no read-modify-write to get wrong here. A credential added after a session started still arrives: substitution is resolved per call rather than frozen at session start, so you can roll or revoke one on a live agent without restarting it. We added a credential more than seven hours into a session and the agent picked it up on its next request.
 
