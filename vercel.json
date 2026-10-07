@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/agent-hook.js": {
+      "includeFiles": "agent.yaml"
+    }
+  }
+}

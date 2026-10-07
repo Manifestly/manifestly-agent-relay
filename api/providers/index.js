@@ -1,4 +1,5 @@
 import * as anthropic from "./anthropic.js";
+import * as openai from "./openai.js";
 
 /**
  * A deployment is coupled to one provider, chosen by AGENT_PROVIDER.
@@ -12,7 +13,7 @@ import * as anthropic from "./anthropic.js";
  * Per deployment also means the Upstash instance is per provider, so session
  * pointers cannot collide across providers without any key doing that work.
  */
-const PROVIDERS = { anthropic };
+const PROVIDERS = { anthropic, openai };
 
 export function provider() {
   const name = process.env.AGENT_PROVIDER?.trim() || "anthropic";

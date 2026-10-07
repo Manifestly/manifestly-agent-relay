@@ -22,6 +22,12 @@ A deployment is coupled to one provider. Six required in production, all set thr
 - `ANTHROPIC_API_KEY`: the key sessions are created with. Scope it to one workspace
 - `CMA_AGENT_ID` / `CMA_ENVIRONMENT_ID` / `CMA_VAULT_ID`: what every session is started from
 
+On an `AGENT_PROVIDER=openai` deployment those three are replaced by:
+
+- `OPENAI_API_KEY`: the key sessions are created with. It needs three scopes, not one: Agents write, Vaults write, and Responses write. Agents alone returns 401 at the first turn rather than at session creation, which reads as a code problem. Permission changes take minutes to propagate
+- `OPENAI_VAULT_ID`: holds a `static_bearer` credential carrying the agent's Manifestly API key, matched to the MCP server url
+- `OPENAI_MODEL`: optional, defaults to `gpt-6-astra`. The Agents API is the Codex harness and refuses general models
+
 Two more so a run can find its session, supplied by the Upstash Redis marketplace integration under either spelling:
 
 - `KV_REST_API_URL` or `UPSTASH_REDIS_REST_URL`
@@ -120,6 +126,10 @@ The 401 path logs three facts, body size, whether the header arrived and whether
 ## agent.yaml Is The Source Of Truth
 
 The agent's system prompt, model, tools and MCP servers live in `agent.yaml`. `bin/agent-json` renders it; `agent.json` is generated and gitignored. Never hand-maintain a second copy. Two files that must agree is the drift this repo exists to avoid.
+
+**It now has two readers, in two languages.** Anthropic takes a persisted agent, so `bin/agent-apply` syncs the rendered definition and the relay never sends a prompt. OpenAI takes the whole definition inline on every session create, so `api/_agent_definition.js` reads the same file at runtime. Its split rule is deliberately identical to `bin/agent-json`'s; they are twins, and a change to one is a change to both. A test asserts the two produce the same prompt.
+
+`agent.yaml` is imported by nothing, so Vercel will not trace it. It ships because `vercel.json` names it in `includeFiles`. If that regresses, an OpenAI deployment throws at module load rather than starting an agent with no instructions.
 
 `bin/agent-apply` omits `version`, which applies unconditionally. That is the documented mode for a loop syncing a checked-in definition, and it means this file wins over anything edited in the Console.
 

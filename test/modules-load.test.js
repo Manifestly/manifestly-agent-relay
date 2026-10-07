@@ -50,3 +50,30 @@ test("the provider module loads and selects one", async () => {
   assert.equal(typeof provider, "function");
   assert.equal(typeof provider().createSession, "function");
 });
+
+// agent.yaml is not imported by anything, so it ships only because vercel.json
+// names it in includeFiles. If that regresses, the openai provider throws at
+// module load and every delivery fails -- which is the right failure, but it
+// should fail here first.
+test("the agent definition loads from agent.yaml", async () => {
+  const { instructions, manifestlyMcpUrl } = await import("../api/_agent_definition.js");
+  assert.ok(instructions.length > 500, "the system prompt is substantial, not a stub");
+  assert.match(manifestlyMcpUrl, /^https:\/\//);
+});
+
+test("the openai provider module loads and exposes the surface", async () => {
+  const mod = await import("../api/providers/openai.js");
+  for (const fn of ["createSession", "sendToSession", "sessionCannotAcceptInput"]) {
+    assert.equal(typeof mod[fn], "function");
+  }
+});
+
+// The two readers of agent.yaml are twins in different languages. If they
+// drift, an OpenAI session runs a different prompt from the Anthropic agent
+// and nothing says so.
+test("both readers of agent.yaml produce the same system prompt", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { instructions } = await import("../api/_agent_definition.js");
+  const rendered = JSON.parse(execFileSync("./bin/agent-json", { encoding: "utf8" })).system;
+  assert.equal(instructions, rendered);
+});
