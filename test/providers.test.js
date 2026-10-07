@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { provider } from "../api/providers/index.js";
 import * as anthropic from "../api/providers/anthropic.js";
+import * as openai from "../api/providers/openai.js";
 
 // A deployment is coupled to one provider by AGENT_PROVIDER, so selection is
 // the only thing between a correct deployment and one that silently runs the
@@ -13,8 +14,10 @@ test("defaults to anthropic when AGENT_PROVIDER is unset", () => {
 });
 
 test("selects by name", () => {
-  process.env.AGENT_PROVIDER = "anthropic";
-  assert.equal(provider().name, "anthropic");
+  for (const name of ["anthropic", "openai"]) {
+    process.env.AGENT_PROVIDER = name;
+    assert.equal(provider().name, name);
+  }
   delete process.env.AGENT_PROVIDER;
 });
 
@@ -27,7 +30,7 @@ test("an unknown provider throws rather than falling back", () => {
 });
 
 test("every provider exposes the surface the handler calls", () => {
-  for (const module of [anthropic]) {
+  for (const module of [anthropic, openai]) {
     assert.equal(typeof module.name, "string");
     for (const fn of ["createSession", "sendToSession", "sessionCannotAcceptInput"]) {
       assert.equal(typeof module[fn], "function", `${module.name}.${fn}`);
@@ -59,3 +62,26 @@ test("anthropic: a server error is not treated as a dead session", () => {
   }
 });
 
+
+// The two allowlists are different, and the whole reason the predicate lives
+// with its provider is so a second one cannot quietly inherit the first.
+test("the providers do not share an allowlist", () => {
+  assert.equal(openai.sessionCannotAcceptInput({ status: 404 }), true);
+  assert.equal(openai.sessionCannotAcceptInput({ status: 409 }), true);
+
+  // Anthropic treats these as dead; OpenAI does not. Recreating on them here
+  // would answer something retryable by starting a second session for the run.
+  assert.equal(openai.sessionCannotAcceptInput({ status: 400 }), false);
+  assert.equal(openai.sessionCannotAcceptInput({ status: 410 }), false);
+
+  assert.equal(anthropic.sessionCannotAcceptInput({ status: 400 }), true);
+  assert.equal(anthropic.sessionCannotAcceptInput({ status: 410 }), true);
+});
+
+// Sending into a live turn returns a clean accept on both providers, so a
+// conflict must not be read as one.
+test("openai: a turn already running is not a dead session", () => {
+  for (const status of [401, 403, 429, 500, undefined]) {
+    assert.equal(openai.sessionCannotAcceptInput({ status }), false, `${status} must retry`);
+  }
+});
