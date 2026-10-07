@@ -31,7 +31,7 @@ const options = (pause = noPause) => ({ lockTtlSeconds: 60, pointerAttempts: 8, 
 
 test("the first delivery for a run creates its session", async () => {
   const store = memoryStore();
-  const result = await resolveSession(store, 42, options());
+  const result = await resolveSession(store, 42, "agent_7", options());
   assert.equal(result.action, "create");
 });
 
@@ -41,8 +41,8 @@ test("the first delivery for a run creates its session", async () => {
 // heard about that step. Every delivery now reaches the session.
 test("a later delivery for the same run joins the existing session", async () => {
   const store = memoryStore();
-  await store.set(runSessionKey(42), "sesn_existing");
-  const result = await resolveSession(store, 42, options());
+  await store.set(runSessionKey(42, "agent_7"), "sesn_existing");
+  const result = await resolveSession(store, 42, "agent_7", options());
   assert.equal(result.action, "send");
   assert.equal(result.sessionId, "sesn_existing");
 });
@@ -52,8 +52,8 @@ test("a delivery arriving while the agent works still reaches the session", asyn
   // mid-turn. A running session is indistinguishable from an idle one here, and
   // that is the point.
   const store = memoryStore();
-  await store.set(runSessionKey(42), "sesn_busy");
-  const result = await resolveSession(store, 42, options());
+  await store.set(runSessionKey(42, "agent_7"), "sesn_busy");
+  const result = await resolveSession(store, 42, "agent_7", options());
   assert.equal(result.action, "send");
   assert.equal(result.sessionId, "sesn_busy");
 });
@@ -63,11 +63,11 @@ test("of two simultaneous first deliveries one creates and the other joins it", 
   // Stands in for the winner publishing its pointer after sessions.create
   // returns, which is what the loser is waiting on.
   const publishAsWinner = async () => {
-    await store.set(runSessionKey(42), "sesn_winner");
+    await store.set(runSessionKey(42, "agent_7"), "sesn_winner");
   };
   const [first, second] = await Promise.all([
-    resolveSession(store, 42, options(publishAsWinner)),
-    resolveSession(store, 42, options(publishAsWinner)),
+    resolveSession(store, 42, "agent_7", options(publishAsWinner)),
+    resolveSession(store, 42, "agent_7", options(publishAsWinner)),
   ]);
 
   const actions = [first, second].map((r) => r.action).sort();
@@ -78,10 +78,10 @@ test("of two simultaneous first deliveries one creates and the other joins it", 
 test("no delivery is discarded when several land at once", async () => {
   const store = memoryStore();
   const publishAsWinner = async () => {
-    await store.set(runSessionKey(42), "sesn_winner");
+    await store.set(runSessionKey(42, "agent_7"), "sesn_winner");
   };
   const results = await Promise.all(
-    [1, 2, 3, 4, 5].map(() => resolveSession(store, 42, options(publishAsWinner))),
+    [1, 2, 3, 4, 5].map(() => resolveSession(store, 42, "agent_7", options(publishAsWinner))),
   );
 
   assert.equal(results.filter((r) => r.action === "create").length, 1, "exactly one session");
@@ -94,24 +94,24 @@ test("a delivery defers rather than dropping when the pointer never appears", as
   // this into a 503 and a Manifestly retry; the old code returned 204 and lost
   // the delivery outright.
   const store = memoryStore();
-  await store.setIfAbsent(createLockKey(42), CREATING);
-  const result = await resolveSession(store, 42, options());
+  await store.setIfAbsent(createLockKey(42, "agent_7"), CREATING);
+  const result = await resolveSession(store, 42, "agent_7", options());
   assert.equal(result.action, "defer");
 });
 
 test("the waiter polls a bounded number of times", async () => {
   const store = memoryStore();
-  await store.setIfAbsent(createLockKey(42), CREATING);
+  await store.setIfAbsent(createLockKey(42, "agent_7"), CREATING);
   let pauses = 0;
-  await resolveSession(store, 42, options(async () => { pauses += 1; }));
+  await resolveSession(store, 42, "agent_7", options(async () => { pauses += 1; }));
   assert.equal(pauses, 8);
 });
 
 test("runs resolve independently of one another", async () => {
   const store = memoryStore();
   const [first, second] = await Promise.all([
-    resolveSession(store, 1, options()),
-    resolveSession(store, 2, options()),
+    resolveSession(store, 1, "agent_7", options()),
+    resolveSession(store, 2, "agent_7", options()),
   ]);
   assert.equal(first.action, "create");
   assert.equal(second.action, "create");
@@ -120,9 +120,9 @@ test("runs resolve independently of one another", async () => {
 test("the pointer and the lock are separate keys", async () => {
   // They were one key, with the lock's short TTL governing both. That is what
   // produced a new session for every step of a run that spanned an hour.
-  assert.notEqual(runSessionKey(42), createLockKey(42));
-  assert.equal(runSessionKey(42), "agent:run:42:session");
-  assert.notEqual(runSessionKey(42), runSessionKey(421));
+  assert.notEqual(runSessionKey(42, "agent_7"), createLockKey(42, "agent_7"));
+  assert.equal(runSessionKey(42, "agent_7"), "agent:run:42:agent:agent_7:session");
+  assert.notEqual(runSessionKey(42, "agent_7"), runSessionKey(421, "agent_7"));
 });
 
 // The recovery path for a pointer naming a session that can no longer take
@@ -147,4 +147,36 @@ test("a server error is not treated as a dead session", () => {
   for (const status of [500, 502, 503, undefined]) {
     assert.equal(sessionCannotAcceptInput({ status }), false);
   }
+});
+
+// The collision this keying exists to prevent. A run can have steps assigned to
+// more than one agent; keyed on the run alone, the second agent's delivery
+// finds the first agent's pointer and its work is sent into a session that
+// belongs to someone else.
+test("two agents on one run do not share a session", async () => {
+  const store = memoryStore();
+
+  const first = await resolveSession(store, 42, "agent_1", options());
+  assert.equal(first.action, "create");
+  await store.set(runSessionKey(42, "agent_1"), "sesn_one");
+
+  const second = await resolveSession(store, 42, "agent_2", options());
+  assert.equal(second.action, "create", "the second agent must start its own session");
+});
+
+test("each agent resumes only its own session on the same run", async () => {
+  const store = memoryStore();
+  await store.set(runSessionKey(42, "agent_1"), "sesn_one");
+  await store.set(runSessionKey(42, "agent_2"), "sesn_two");
+
+  assert.equal((await resolveSession(store, 42, "agent_1", options())).sessionId, "sesn_one");
+  assert.equal((await resolveSession(store, 42, "agent_2", options())).sessionId, "sesn_two");
+});
+
+test("the create lock is per agent, so one agent creating does not defer another", async () => {
+  const store = memoryStore();
+  await store.setIfAbsent(createLockKey(42, "agent_1"), CREATING);
+
+  const other = await resolveSession(store, 42, "agent_2", options());
+  assert.equal(other.action, "create");
 });
