@@ -10,6 +10,9 @@ Receives the webhook Manifestly sends when a run step is assigned to an AI agent
 - `./bin/cma-inspect`: list the vaults, environments, agents and credentials on the account (needs `ANTHROPIC_API_KEY` only)
 - `./bin/cma-credential`: add an `environment_variable` credential to a vault without the value entering shell history
 - `./bin/cma-credential-rm`: remove a credential from a vault, after showing what it is and asking. Hard delete, no undo
+- `./bin/openai-inspect`: list the Agents API vaults and their credentials (needs `OPENAI_API_KEY` only)
+- `./bin/openai-credential`: add the `static_bearer` credential an OpenAI deployment needs, creating the vault if you give it no vault id. Reads the MCP server URL from `agent.yaml` rather than taking it as an argument
+- `./bin/openai-credential-rm`: remove one, after showing what it is and asking. Hard delete, no undo
 - `npx vercel ls`: confirm a merge deployed. Deploys are automatic; see Deployment
 
 ## Environment Variables

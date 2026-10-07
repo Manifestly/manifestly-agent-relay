@@ -1,0 +1,32 @@
+#!/usr/bin/env node
+// Lists the Agents API vaults on this account and the credentials in each.
+// Read-only. Needs only an OpenAI API key; every id is discoverable from it,
+// so nothing has to be known in advance. Secret values are never returned.
+//
+// Usage: bin/openai-inspect
+import OpenAI from "openai";
+import { apiKey } from "./_prompt.mjs";
+
+const client = new OpenAI({ apiKey: await apiKey() });
+
+const vaults = (await client.beta.agents.vaults.list({ limit: 50 })).data ?? [];
+if (!vaults.length) {
+  console.log("\nNo vaults. bin/openai-credential creates one if you give it no vault id.");
+  process.exit(0);
+}
+
+for (const vault of vaults) {
+  console.log(`\n================ ${vault.name ?? "(unnamed)"}  ${vault.id}`);
+  const credentials = (await client.beta.agents.vaults.credentials.list(vault.id, { limit: 50 })).data ?? [];
+  if (!credentials.length) {
+    console.log("  (no credentials)");
+    continue;
+  }
+  for (const credential of credentials) {
+    const auth = credential.auth ?? {};
+    const target = auth.mcp_server_url ?? auth.networking?.allowed_hosts?.join(", ") ?? "?";
+    console.log(`  ${credential.id}\n    ${credential.name ?? "(unnamed)"}  type=${auth.type}  ->  ${target}`);
+  }
+}
+
+console.log("\nOPENAI_VAULT_ID is the vault id the relay should use.");
