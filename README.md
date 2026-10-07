@@ -121,6 +121,12 @@ The session pointer is this relay's answer: every delivery for a run resolves to
 
 Nothing about your process. No retries of its own, no business logic, no knowledge of what the agent is for. Everything describing the work lives in your workflow's step text.
 
+**It does not equalise what your agent can do.** The relay starts a session and feeds it deliveries, and both providers do that identically. What the agent can reach once started belongs to the provider's runtime, not to this relay, and the two are not currently equivalent.
+
+Concretely: an agent that only calls your Manifestly MCP server works on either provider, because the MCP credential is a `static_bearer` and needs no sandbox. An agent that reaches any other host needs an `environment_variable` credential, where the agent holds a placeholder and the real value is substituted at egress. On Anthropic that works with the environment the agent already has. On OpenAI that credential type is only available in a hosted environment, so it requires `environment: { type: "openai_hosted" }` rather than the `none` this relay sends, and that path is unproven here. One earlier attempt at a hosted environment on our account failed to provision.
+
+So if your workflow's steps ask the agent to touch anything beyond Manifestly, confirm that works on your provider before assuming the relay supporting both means your agent does.
+
 ## Keeping your copy current
 
 You own your copy, so nothing here updates itself. Configuration is entirely environment variables and there is no code you need to change, which means a fork does not drift and pulling updates stays clean:
