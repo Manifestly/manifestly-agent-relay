@@ -3,14 +3,18 @@ import { signatureIsValid } from "./_signature.js";
 import { resolveSession, runSessionKey, createLockKey, sessionCannotAcceptInput } from "./_session.js";
 import { store, storeIsConfigured } from "./_store.js";
 
-// Deliberately not an allowlist of event names. An agent hook receives only
-// agent-work notifications, and which name arrives depends on how the step was
-// assigned: step_assigned / step_became_applicable for a membership,
-// step_role_ready for a multi-member role, run_invited when the agent joins the
-// run as a participant. Enumerating them got this wrong twice, silently, so the
-// condition is instead "does this delivery name a run" and the agent works out
-// what is waiting for it from the run state, which its system prompt already
-// tells it to do.
+// Deliberately not an allowlist of event names. Which names arrive is
+// Manifestly's vocabulary rather than ours, and it is wider than work-arriving
+// notifications: terminal and informational events reach an agent hook too.
+// Enumerating them got this wrong twice, silently, and a list written here
+// would go stale the same way, so there is none. The condition is instead
+// "does this delivery name a run", and the agent works out what is waiting for
+// it from the run state, which its system prompt already tells it to do.
+//
+// That open-by-default position is load-bearing rather than lazy. Deliveries
+// the relay could not have classified are how a human decision reaches the
+// agent mid-run, and a delivery that turns out to be redundant costs one turn:
+// the agent re-reads the run, finds nothing new, and records that it checked.
 
 // Held only across sessions.create, which is one API call. Two minutes is
 // generous for that and short enough that a crashed invocation costs one
