@@ -66,7 +66,7 @@ So the Manifestly MCP credential is a `static_bearer` keyed to your MCP server U
 
 Then create an agent whose `mcp_servers` lists your Manifestly MCP server and whose `tools` includes a matching `mcp_toolset` entry. Keep the agent's system prompt free of any single process's details: it should say how the agent works, while each workflow's step text says what the work is. That is what lets one agent serve every workflow.
 
-*On OpenAI* (`AGENT_PROVIDER=openai`). Create a vault and add a `static_bearer` credential carrying the agent's Manifestly API key, keyed to your MCP server URL. There is no agent object to create: the Agents API takes the whole definition on every session, so the relay sends `agent.yaml`'s system prompt inline. Three things are worth knowing before you start:
+*On OpenAI* (`AGENT_PROVIDER=openai`). `bin/openai-credential` creates the vault and adds a `static_bearer` credential carrying the agent's Manifestly API key, reading the server URL from `agent.yaml` so it cannot point at a server the agent never calls. `bin/openai-inspect` lists what exists and needs nothing but an API key. There is no agent object to create: the Agents API takes the whole definition on every session, so the relay sends `agent.yaml`'s system prompt inline. Three things are worth knowing before you start:
 
 - **The API key needs three scopes, not one.** Agents write, Vaults write, and Responses write. With Agents alone, session creation succeeds and the first *turn* returns `401 ... requires the api.responses.write permission`, which reads like a code problem. Permission changes also take a few minutes to propagate, and model validation runs before the permission check, so a bad model name produces a `400` that makes it look as though the credentials are fine.
 - **The Agents API is the Codex harness and refuses general models.** `gpt-5` is rejected outright. `OPENAI_MODEL` defaults to `gpt-6-astra`.
@@ -120,6 +120,14 @@ The session pointer is this relay's answer: every delivery for a run resolves to
 ## What it deliberately does not do
 
 Nothing about your process. No retries of its own, no business logic, no knowledge of what the agent is for. Everything describing the work lives in your workflow's step text.
+
+**It does not equalise what your agent can do.** The relay starts a session and feeds it deliveries, and both providers do that identically. What the agent can reach once started belongs to the provider's runtime, not to this relay, and the two are not currently equivalent.
+
+Concretely: an agent that only calls your Manifestly MCP server works on either provider, because the MCP credential is a `static_bearer` and needs no sandbox. An agent that reaches any other host needs an `environment_variable` credential, where the agent holds a placeholder and the real value is substituted at egress for allowed destinations.
+
+Both providers support that, and the mechanism is near identical: a two-layer allowlist, the environment's network policy and the credential's own host list, both of which must permit a destination. The difference is that on OpenAI the credential type exists only inside a hosted environment, so it needs `environment: { type: "openai_hosted" }` rather than the `none` this relay currently sends. Verified on this account: a hosted environment provisions, the agent gets a shell, and an allowlisted `curl` carrying a vaulted secret returns real data.
+
+**This relay sends `none`.** That is right for an MCP-only agent and avoids a sandbox that can fail to provision, but it means an agent started by this relay on OpenAI cannot reach a non-MCP host. If your workflow's steps ask the agent to touch anything beyond Manifestly, that is the gap to close before assuming the relay supporting both means your agent does.
 
 ## Keeping your copy current
 
