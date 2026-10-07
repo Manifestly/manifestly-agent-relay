@@ -1,8 +1,10 @@
 # Manifestly agent relay
 
-Receives the webhook Manifestly sends when a run step is assigned to an AI agent, and starts a [Claude Managed Agents](https://docs.claude.com/en/api/agent-sdk) session to do the work.
+Receives the webhook Manifestly sends when a run step is assigned to an AI agent, and starts a managed agent session to do the work. One deployment runs one provider, chosen by `AGENT_PROVIDER`: [Claude Managed Agents](https://docs.claude.com/en/api/agent-sdk) or the [OpenAI Agents API](https://developers.openai.com/api/docs/guides/agents-api/overview).
 
-It is about forty lines. Manifestly cannot call the Anthropic API directly, because the delivery body and headers are Manifestly's own shape, so something has to sit between them. This is that something.
+Manifestly cannot call either provider directly, because the delivery body and headers are Manifestly's own shape and the provider wants its own, with a key in a header. Something has to sit between them. This is that something.
+
+Which provider is entirely this deployment's business. An AI agent in Manifestly points at a URL and nothing more, so whoever operates the endpoint chooses what is behind it and holds the credentials for it. Manifestly never learns the answer.
 
 It is a reference implementation, not a service. You run your own copy, and it is yours to change. Nothing in the code is tied to a particular host: the handler is a standard Web `Request`/`Response` function and the only state is a Redis store reached over HTTP, so it runs unchanged on any platform that routes a request to a function. We deploy it to Vercel, which is why the deployment instructions and most of the hard-won operational notes below are Vercel's. Moving it elsewhere is a different deploy command, not different code.
 
@@ -16,7 +18,9 @@ It is a reference implementation, not a service. You run your own copy, and it i
 
 The delivery carries ids and nothing else. The agent reads the run through the Manifestly MCP server, which means the instructions for the work live in your workflow's step text, not in this code. Nothing here knows what process it triggered.
 
-**It does not filter on event name, deliberately.** Which event you get depends on how the step was assigned: `step_assigned` or `step_became_applicable` for a step assigned to a membership, `step_role_ready` for a role with several members, `run_invited` when the agent joins the run as a participant. An earlier version listed the two it expected and silently ignored real deliveries twice, returning 204 and looking healthy. An agent hook only ever receives agent-work notifications, so the useful question is whether the delivery names a run.
+**It does not filter on event name, deliberately.** Which names arrive is Manifestly's vocabulary rather than ours, and it is wider than work-arriving notifications: terminal and informational events reach an agent hook too. An earlier version listed the two it expected and silently ignored real deliveries twice, returning 204 and looking healthy. A list written here would go stale the same way, so there is none. The useful question is whether the delivery names a run, and the agent reads the run to find out what is waiting.
+
+That open-by-default position earns its keep. The deliveries nobody could have classified in advance are how a human decision reaches an agent mid-run, and a delivery that turns out to be redundant costs one turn in which the agent re-reads the run, finds nothing new, and says so.
 
 ## Deploy
 
@@ -41,7 +45,9 @@ Use `printf` rather than `echo`, which appends a newline. Read the first entry u
 
 Then take the webhook signing secret from Settings > Account. Two things to know about it: it is account-level rather than per-hook, and it is shown only when created or rotated. If nobody saved it, the only way to obtain it is to rotate, which invalidates it for every other webhook consumer in the account at the same moment. Check what else is subscribed before you rotate.
 
-**In Anthropic.** Create a vault, an environment and an agent. `bin/cma-inspect` lists all three for your account and needs nothing but an API key, so run it first and after every change.
+**In your provider.** Both store the agent's Manifestly API key in a vault rather than in a prompt, and both match the credential to your MCP server URL.
+
+*On Anthropic* (`AGENT_PROVIDER=anthropic`, the default). Create a vault, an environment and an agent. `bin/cma-inspect` lists all three for your account and needs nothing but an API key, so run it first and after every change.
 
 The vault holds one credential per service the agent reaches. The two credential types are not interchangeable and the names do not suggest what they do:
 
@@ -60,9 +66,15 @@ So the Manifestly MCP credential is a `static_bearer` keyed to your MCP server U
 
 Then create an agent whose `mcp_servers` lists your Manifestly MCP server and whose `tools` includes a matching `mcp_toolset` entry. Keep the agent's system prompt free of any single process's details: it should say how the agent works, while each workflow's step text says what the work is. That is what lets one agent serve every workflow.
 
+*On OpenAI* (`AGENT_PROVIDER=openai`). Create a vault and add a `static_bearer` credential carrying the agent's Manifestly API key, keyed to your MCP server URL. There is no agent object to create: the Agents API takes the whole definition on every session, so the relay sends `agent.yaml`'s system prompt inline. Three things are worth knowing before you start:
+
+- **The API key needs three scopes, not one.** Agents write, Vaults write, and Responses write. With Agents alone, session creation succeeds and the first *turn* returns `401 ... requires the api.responses.write permission`, which reads like a code problem. Permission changes also take a few minutes to propagate, and model validation runs before the permission check, so a bad model name produces a `400` that makes it look as though the credentials are fine.
+- **The Agents API is the Codex harness and refuses general models.** `gpt-5` is rejected outright. `OPENAI_MODEL` defaults to `gpt-6-astra`.
+- **Use no sandbox.** The relay sets `environment: { type: "none" }`, because an agent that only calls a remote MCP server does not need one and a hosted environment is a second thing that can fail to provision. The first attempt at this, before the relay supported it, died with `"The sandbox failed to connect."` and never ran.
+
 **Back in Manifestly.** Set this relay's URL as the agent's endpoint, then assign steps to the agent.
 
-Inference is billed to your own Anthropic account, not through Manifestly. What a run costs depends entirely on what your workflow asks the agent to do, so watch the first few before scheduling anything daily.
+Inference is billed to your own provider account, not through Manifestly. What a run costs depends entirely on what your workflow asks the agent to do, so watch the first few before scheduling anything daily.
 
 ## Assigning steps
 
@@ -78,7 +90,10 @@ Prefer a role. A workflow exported as a template carries the role name, so whoev
 
 **Set the environment variables from the CLI, not a dashboard.** Both secrets we pasted into Vercel's web form arrived truncated: a 32-character signing secret stored as 19, and an API key as a fragment. Neither failed at the time. They surfaced much later as unexplained 401s from two different systems. Verify the length before and after.
 
-**Your agent's MCP tools probably default to asking permission.** On Claude Managed Agents, `mcp_toolset` defaults to `permission_policy: always_ask`, which suspends every call waiting for a confirmation event. That is right for an interactive agent and fatal for one started by a webhook, because nobody is listening to answer. The symptom is an agent that emits its tool calls and goes idle having done nothing. Set `always_allow` explicitly.
+**Both providers have a default that makes an agent finish having done nothing, and they are different defaults.** The symptom is identical and so is the cost of missing it: a session that completes, no error anywhere, and a run record showing work that never happened.
+
+- *Anthropic*: `mcp_toolset` defaults to `permission_policy: always_ask`, which suspends every call waiting for a confirmation event. Right for an interactive agent, fatal for one started by a webhook, because nobody is listening to answer. The agent emits its tool calls and goes idle. Set `always_allow` explicitly.
+- *OpenAI*: an MCP tool defaults to `required: false`, which silently drops a server that will not connect. The turn then runs to completion and the agent writes a confident, well-formed answer explaining that it has no tools. Set `required: true`.
 
 **Vaulted secrets reach headers and bodies, never query strings.** If a service authenticates with `?key=...`, the placeholder goes out literally and you get its own auth error back. Check whether the service also accepts a header: Airbrake's documentation describes only the query parameter, and it accepts `Authorization: Bearer` perfectly well.
 
