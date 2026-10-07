@@ -1,15 +1,23 @@
 export const CREATING = "creating";
 
-export function runSessionKey(runId) {
-  return `agent:run:${runId}:session`;
+export function runSessionKey(runId, agentId) {
+  return `agent:run:${runId}:agent:${agentId}:session`;
 }
 
-export function createLockKey(runId) {
-  return `agent:run:${runId}:creating`;
+export function createLockKey(runId, agentId) {
+  return `agent:run:${runId}:agent:${agentId}:creating`;
 }
 
 /**
- * A run has one session, and every delivery for that run reaches it.
+ * A run has one session PER AGENT, and every delivery for that pair reaches it.
+ *
+ * Keyed on the pair rather than the run because a run can have steps assigned to
+ * more than one agent, and each is a separate worker with its own continuous
+ * context. Keyed on the run alone, the second agent's delivery finds the first
+ * agent's pointer and sends its work into a session belonging to someone else:
+ * an agent is told to do work it was not assigned, and the session that was
+ * supposed to receive it never hears about it. Where a relay serves agents
+ * belonging to different parties, that is a leak rather than a mix-up.
  *
  * What this replaces spent most of its length arbitrating between competing
  * sessions: whether to suppress a delivery, whether an idle holder could be
@@ -26,14 +34,14 @@ export function createLockKey(runId) {
  * pointer is exactly why a run whose steps complete over a morning accumulated
  * a session per step.
  */
-export async function resolveSession(store, runId, options) {
+export async function resolveSession(store, runId, agentId, options) {
   const { lockTtlSeconds, pointerAttempts, pause } = options;
-  const pointerKey = runSessionKey(runId);
+  const pointerKey = runSessionKey(runId, agentId);
 
   const existing = await store.get(pointerKey);
   if (existing !== null) return { action: "send", sessionId: existing };
 
-  if (await store.setIfAbsent(createLockKey(runId), CREATING, lockTtlSeconds)) {
+  if (await store.setIfAbsent(createLockKey(runId, agentId), CREATING, lockTtlSeconds)) {
     return { action: "create" };
   }
 

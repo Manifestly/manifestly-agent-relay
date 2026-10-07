@@ -66,6 +66,7 @@ export async function POST(request) {
     console.log(JSON.stringify({
       diag: "deferred_to_retry",
       run_id: delivery.run_id,
+      agent_id: delivery.agent_id ?? null,
       event: delivery.event,
       run_step_id: delivery.run_step_id ?? null,
     }));
@@ -84,15 +85,19 @@ export async function POST(request) {
  */
 async function deliverToRun(delivery, attempt = 0) {
   const runId = delivery.run_id;
+  // Every agent hook body carries agent_id. A delivery without one is not
+  // expected; it gets its own namespace rather than a key reading "undefined",
+  // so such deliveries share a session with each other and with nothing else.
+  const agentId = delivery.agent_id ?? "unknown";
 
   if (!storeIsConfigured()) {
-    console.log(JSON.stringify({ diag: "session_store_unconfigured", run_id: runId }));
+    console.log(JSON.stringify({ diag: "session_store_unconfigured", run_id: runId, agent_id: agentId }));
     return { sessionId: (await createSession(delivery)).id, resumed: false };
   }
 
   let resolution;
   try {
-    resolution = await resolveSession(store, runId, {
+    resolution = await resolveSession(store, runId, agentId, {
       lockTtlSeconds: CREATE_LOCK_TTL_SECONDS,
       pointerAttempts: POINTER_WAIT_ATTEMPTS,
       pause: () => new Promise((resolve) => setTimeout(resolve, POINTER_WAIT_MS)),
@@ -104,6 +109,7 @@ async function deliverToRun(delivery, attempt = 0) {
     console.log(JSON.stringify({
       diag: "session_store_unavailable",
       run_id: runId,
+      agent_id: agentId,
       error: String(error).slice(0, 200),
     }));
     return { sessionId: (await createSession(delivery)).id, resumed: false };
@@ -114,11 +120,12 @@ async function deliverToRun(delivery, attempt = 0) {
   if (resolution.action === "send") {
     try {
       await sendToSession(resolution.sessionId, delivery);
-      await refreshPointer(runId, resolution.sessionId);
+      await refreshPointer(runId, agentId, resolution.sessionId);
       console.log(JSON.stringify({
         diag: "resumed_session",
         session_id: resolution.sessionId,
         run_id: runId,
+        agent_id: agentId,
         event: delivery.event,
         run_step_id: delivery.run_step_id ?? null,
       }));
@@ -129,9 +136,10 @@ async function deliverToRun(delivery, attempt = 0) {
         diag: "session_pointer_stale",
         session_id: resolution.sessionId,
         run_id: runId,
+        agent_id: agentId,
         error: String(error).slice(0, 200),
       }));
-      await forgetQuietly(runSessionKey(runId));
+      await forgetQuietly(runSessionKey(runId, agentId));
       return deliverToRun(delivery, attempt + 1);
     }
   }
@@ -140,6 +148,7 @@ async function deliverToRun(delivery, attempt = 0) {
     diag: "starting_session",
     event: delivery.event,
     run_id: runId,
+    agent_id: agentId,
     run_step_id: delivery.run_step_id ?? null,
   }));
 
@@ -150,11 +159,11 @@ async function deliverToRun(delivery, attempt = 0) {
     // Holding the create lock for a session that does not exist would suppress
     // every delivery for the run until it expired, which is the window the
     // agent was meant to be working in.
-    await forgetQuietly(createLockKey(runId));
+    await forgetQuietly(createLockKey(runId, agentId));
     throw error;
   }
 
-  await refreshPointer(runId, session.id);
+  await refreshPointer(runId, agentId, session.id);
   return { sessionId: session.id, resumed: false };
 }
 
@@ -184,15 +193,16 @@ async function sendToSession(sessionId, delivery) {
   });
 }
 
-async function refreshPointer(runId, sessionId) {
+async function refreshPointer(runId, agentId, sessionId) {
   try {
-    await store.set(runSessionKey(runId), sessionId, SESSION_POINTER_TTL_SECONDS);
+    await store.set(runSessionKey(runId, agentId), sessionId, SESSION_POINTER_TTL_SECONDS);
   } catch (error) {
     // The session exists and has the work; failing the delivery now would
     // retry it into a second session, which is the duplicate this prevents.
     console.log(JSON.stringify({
       diag: "session_pointer_write_failed",
       run_id: runId,
+      agent_id: agentId,
       session_id: sessionId,
       error: String(error).slice(0, 200),
     }));
