@@ -14,7 +14,9 @@ Receives the webhook Manifestly sends when a run step is assigned to an AI agent
 
 ## Environment Variables
 
-Five required in production, all set through the Vercel CLI (see below):
+A deployment is coupled to one provider. Six required in production, all set through the Vercel CLI (see below):
+
+- `AGENT_PROVIDER`: which provider this deployment runs. Defaults to `anthropic` when unset; an unrecognised value throws at the first delivery rather than falling back, because the alternative to throwing is running the other one
 
 - `MANIFESTLY_WEBHOOK_SIGNING_SECRET`: account-level, from Settings. Verify it is 32 hex characters
 - `ANTHROPIC_API_KEY`: the key sessions are created with. Scope it to one workspace

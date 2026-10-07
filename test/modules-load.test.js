@@ -31,14 +31,22 @@ test("an unconfigured store reports itself unconfigured rather than throwing", a
   assert.equal(storeIsConfigured(), false);
 });
 
-// The handler calls exactly two things on the Anthropic client. Neither is
+// The anthropic provider calls exactly two things on its client. Neither is
 // exercised by any test, and the whole one-session-per-run design rests on the
 // second existing at that path: an earlier version of the design doc asserted
 // there was no way to append to a session at all. This does not prove send
-// behaves, only that it is where the handler reaches for it.
+// behaves, only that it is where the provider reaches for it.
 test("the client exposes the two session calls the handler makes", async () => {
   const { default: Anthropic } = await import("@anthropic-ai/sdk");
   const client = new Anthropic({ apiKey: "sk-ant-not-a-real-key" });
   assert.equal(typeof client.beta.sessions.create, "function");
   assert.equal(typeof client.beta.sessions.events.send, "function");
+});
+
+// providers/index.js is deployed and selects what the handler runs, so a
+// syntax error or a bad import path in it fails every delivery.
+test("the provider module loads and selects one", async () => {
+  const { provider } = await import("../api/providers/index.js");
+  assert.equal(typeof provider, "function");
+  assert.equal(typeof provider().createSession, "function");
 });

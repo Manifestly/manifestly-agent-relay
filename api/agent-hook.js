@@ -1,6 +1,6 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { signatureIsValid } from "./_signature.js";
-import { resolveSession, runSessionKey, createLockKey, sessionCannotAcceptInput } from "./_session.js";
+import { resolveSession, runSessionKey, createLockKey } from "./_session.js";
+import { provider } from "./providers/index.js";
 import { store, storeIsConfigured } from "./_store.js";
 
 // Deliberately not an allowlist of event names. Which names arrive is
@@ -30,12 +30,6 @@ const SESSION_POINTER_TTL_SECONDS = 60 * 60 * 24 * 14;
 
 const POINTER_WAIT_ATTEMPTS = 8;
 const POINTER_WAIT_MS = 250;
-
-let client;
-function anthropic() {
-  client ??= new Anthropic();
-  return client;
-}
 
 export async function POST(request) {
   const rawBody = await request.text();
@@ -135,7 +129,7 @@ async function deliverToRun(delivery, attempt = 0) {
       }));
       return { sessionId: resolution.sessionId, resumed: true };
     } catch (error) {
-      if (!sessionCannotAcceptInput(error) || attempt > 0) throw error;
+      if (!provider().sessionCannotAcceptInput(error) || attempt > 0) throw error;
       console.log(JSON.stringify({
         diag: "session_pointer_stale",
         session_id: resolution.sessionId,
@@ -174,27 +168,14 @@ async function deliverToRun(delivery, attempt = 0) {
 // Awaited rather than fired and forgotten: a failure here becomes a non-200,
 // which is what makes Manifestly's delivery retry meaningful.
 async function createSession(delivery) {
-  return anthropic().beta.sessions.create({
-    agent: process.env.CMA_AGENT_ID,
-    environment_id: process.env.CMA_ENVIRONMENT_ID,
-    vault_ids: [process.env.CMA_VAULT_ID],
-    title: `Manifestly run ${delivery.run_id}`,
-    metadata: { manifestly_run_id: String(delivery.run_id) },
-    initial_events: [
-      { type: "user.message", content: [{ type: "text", text: assignmentBrief(delivery, false) }] },
-    ],
+  return provider().createSession({
+    runId: delivery.run_id,
+    brief: assignmentBrief(delivery, false),
   });
 }
 
-// Sending into a session that is mid-turn is not an error: the platform queues
-// the input and delivers it when the turn ends. That is what makes one session
-// per run possible at all, and it is why nothing here checks session status.
 async function sendToSession(sessionId, delivery) {
-  return anthropic().beta.sessions.events.send(sessionId, {
-    events: [
-      { type: "user.message", content: [{ type: "text", text: assignmentBrief(delivery, true) }] },
-    ],
-  });
+  return provider().sendToSession(sessionId, { brief: assignmentBrief(delivery, true) });
 }
 
 async function refreshPointer(runId, agentId, sessionId) {
