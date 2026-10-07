@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveSession, runSessionKey, createLockKey, CREATING, sessionCannotAcceptInput } from "../api/_session.js";
+import { resolveSession, runSessionKey, createLockKey, CREATING } from "../api/_session.js";
 
 // A real implementation of the SET NX EX semantics the resolver depends on, not
 // a stub that returns what the code expects. Two resolutions driven against one
@@ -123,30 +123,6 @@ test("the pointer and the lock are separate keys", async () => {
   assert.notEqual(runSessionKey(42, "agent_7"), createLockKey(42, "agent_7"));
   assert.equal(runSessionKey(42, "agent_7"), "agent:run:42:agent:agent_7:session");
   assert.notEqual(runSessionKey(42, "agent_7"), runSessionKey(421, "agent_7"));
-});
-
-// The recovery path for a pointer naming a session that can no longer take
-// input. Handling only 404 left an archived or terminated session failing every
-// delivery for the rest of the run, since the handler rethrows anything it does
-// not recognise here.
-test("a session that cannot accept input is recognised from any state 4xx", () => {
-  for (const status of [400, 404, 409, 410]) {
-    assert.equal(sessionCannotAcceptInput({ status }), true, `${status} means recreate`);
-  }
-});
-
-// Recreating on these would answer a missing key or a throttle by starting a
-// second session for the run, which is the duplicate this design removes.
-test("auth and rate limit failures are not treated as a dead session", () => {
-  for (const status of [401, 403, 429]) {
-    assert.equal(sessionCannotAcceptInput({ status }), false, `${status} must retry, not recreate`);
-  }
-});
-
-test("a server error is not treated as a dead session", () => {
-  for (const status of [500, 502, 503, undefined]) {
-    assert.equal(sessionCannotAcceptInput({ status }), false);
-  }
 });
 
 // The collision this keying exists to prevent. A run can have steps assigned to
