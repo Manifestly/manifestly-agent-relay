@@ -123,9 +123,11 @@ Nothing about your process. No retries of its own, no business logic, no knowled
 
 **It does not equalise what your agent can do.** The relay starts a session and feeds it deliveries, and both providers do that identically. What the agent can reach once started belongs to the provider's runtime, not to this relay, and the two are not currently equivalent.
 
-Concretely: an agent that only calls your Manifestly MCP server works on either provider, because the MCP credential is a `static_bearer` and needs no sandbox. An agent that reaches any other host needs an `environment_variable` credential, where the agent holds a placeholder and the real value is substituted at egress. On Anthropic that works with the environment the agent already has. On OpenAI that credential type is only available in a hosted environment, so it requires `environment: { type: "openai_hosted" }` rather than the `none` this relay sends, and that path is unproven here. One earlier attempt at a hosted environment on our account failed to provision.
+Concretely: an agent that only calls your Manifestly MCP server works on either provider, because the MCP credential is a `static_bearer` and needs no sandbox. An agent that reaches any other host needs an `environment_variable` credential, where the agent holds a placeholder and the real value is substituted at egress for allowed destinations.
 
-So if your workflow's steps ask the agent to touch anything beyond Manifestly, confirm that works on your provider before assuming the relay supporting both means your agent does.
+Both providers support that, and the mechanism is near identical: a two-layer allowlist, the environment's network policy and the credential's own host list, both of which must permit a destination. The difference is that on OpenAI the credential type exists only inside a hosted environment, so it needs `environment: { type: "openai_hosted" }` rather than the `none` this relay currently sends. Verified on this account: a hosted environment provisions, the agent gets a shell, and an allowlisted `curl` carrying a vaulted secret returns real data.
+
+**This relay sends `none`.** That is right for an MCP-only agent and avoids a sandbox that can fail to provision, but it means an agent started by this relay on OpenAI cannot reach a non-MCP host. If your workflow's steps ask the agent to touch anything beyond Manifestly, that is the gap to close before assuming the relay supporting both means your agent does.
 
 ## Keeping your copy current
 
