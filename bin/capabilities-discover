@@ -90,9 +90,15 @@ async function anthropic() {
     sandbox,
     allowedHosts: networking.allowed_hosts ?? [],
     credentials: credentials.data ?? [],
+    // Ids go to stderr, never into the file. They are what you want on
+    // screen while running this, and exactly what must not land in a
+    // committed config: this repo is public and its own template rule is
+    // that no account id belongs in it. They are not credentials, but a
+    // reader cannot tell which opaque vlt_ string is safe to expose, so
+    // none of them are treated as safe.
+    ids: `agent ${agent.id} | environment ${environment.id} | vault ${vault.id}`,
     notes: [
-      `agent ${agent.id} | environment ${environment.id} | vault ${vault.id}`,
-    `networking.type=${networking.type ?? "?"}`,
+      `networking.type=${networking.type ?? "?"}`,
       `allow_mcp_servers=${networking.allow_mcp_servers ?? "unset"}`,
       networking.type === "unrestricted"
         ? "networking is UNRESTRICTED: egress below is empty because the environment permits every host, which capabilities.yaml has no way to say. Decide the real list before relying on this file."
@@ -108,6 +114,7 @@ async function openai() {
   const credentials = await new OpenAI().beta.agents.vaults.credentials.list(vaultId);
 
   return {
+    ids: `vault ${vaultId}`,
     // Sessions carry environment.type inline, so there is no account object to
     // read it from: nothing here has run yet to observe. The relay's own
     // default is the honest answer.
@@ -115,14 +122,14 @@ async function openai() {
     allowedHosts: [],
     credentials: credentials.data ?? [],
     notes: [
-      `vault ${vaultId}`,
       "sandbox is not discoverable on this provider: environment.type is set per session rather than on an account object, so this reports the safe default rather than what any past session used.",
     ],
   };
 }
 
-const discovered = await ({ anthropic, openai })[provider]?.() ??
-  die(`AGENT_PROVIDER "${provider}" is not one of: anthropic, openai`);
+const read = { anthropic, openai }[provider];
+if (!read) die(`AGENT_PROVIDER "${provider}" is not one of: anthropic, openai`);
+const discovered = await read();
 
 const secrets = [];
 const mcpOnly = [];
@@ -131,7 +138,7 @@ for (const credential of discovered.credentials) {
   const hosts = hostsOf(auth);
   const label = auth.secret_name ?? credential.name ?? credential.id;
   if (hosts) secrets.push({ name: label, hosts });
-  else mcpOnly.push(`${label} -> ${auth.mcp_server_url ?? "(no host)"}`);
+  else mcpOnly.push(`${credential.id} -> ${auth.mcp_server_url ?? "(no host)"}`);
 }
 
 const claimed = new Set(secrets.flatMap((secret) => secret.hosts));
@@ -145,13 +152,10 @@ const lines = [
   ...(mcpOnly.length
     ? [
         "#",
-        "# Credentials authenticating an MCP server rather than a host, so they are",
-        "# not secrets in this file's sense; their server belongs in agent.yaml:",
-        ...mcpOnly.map((entry) => `#   ${entry}`),
+        `# ${mcpOnly.length} credential(s) authenticate an MCP server rather than a host, so`,
+        "# they are not secrets in this file's sense; their server belongs in agent.yaml.",
       ]
     : []),
-  "",
-  `sandbox: ${discovered.sandbox}`,
   "",
   secrets.length ? "secrets:" : "secrets: []",
   ...secrets.flatMap((secret) => [`  - name: ${secret.name}`, `    hosts: [${secret.hosts.join(", ")}]`]),
@@ -160,4 +164,7 @@ const lines = [
   ...egress.map((host) => `  - ${host}`),
 ];
 
+process.stderr.write(`${discovered.ids}\n`);
+process.stderr.write(`AGENT_SANDBOX=${discovered.sandbox}\n`);
+if (mcpOnly.length) process.stderr.write(mcpOnly.map((entry) => `  ${entry}`).join("\n") + "\n");
 process.stdout.write(lines.join("\n") + "\n");

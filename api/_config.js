@@ -43,6 +43,7 @@ const BY_PROVIDER = {
 // session per delivery, which is the behaviour one-session-per-run replaces.
 const OPTIONAL = [
   { name: "AGENT_PROVIDER", why: "which provider this deployment runs; defaults to anthropic" },
+  { name: "AGENT_SANDBOX", why: "none or hosted; whether the agent gets a shell. Defaults to none" },
   { name: "KV_REST_API_URL", why: "session store; or UPSTASH_REDIS_REST_URL" },
   { name: "KV_REST_API_TOKEN", why: "session store; or UPSTASH_REDIS_REST_TOKEN" },
 ];

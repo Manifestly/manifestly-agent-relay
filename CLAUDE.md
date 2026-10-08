@@ -22,6 +22,7 @@ Receives the webhook Manifestly sends when a run step is assigned to an AI agent
 A deployment is coupled to one provider. Six required in production, all set through the Vercel CLI (see below):
 
 - `AGENT_PROVIDER`: which provider this deployment runs. Defaults to `anthropic` when unset; an unrecognised value throws at the first delivery rather than falling back, because the alternative to throwing is running the other one
+- `AGENT_SANDBOX`: `none` or `hosted`, whether the agent gets a shell. Defaults to `none`. It is an environment variable and not a `capabilities.yaml` key for one reason: the relay needs it on every OpenAI session create, and that file is gitignored and so absent from the Vercel build, where a runtime read would resolve to `none` and the agent would report that it cannot run commands with nothing saying why. A leftover `sandbox:` key in the file is refused rather than ignored
 
 - `MANIFESTLY_WEBHOOK_SIGNING_SECRET`: account-level, from Settings. Verify it is 32 hex characters
 - `ANTHROPIC_API_KEY`: the key sessions are created with. Scope it to one workspace
@@ -135,7 +136,11 @@ The 401 path logs three facts, body size, whether the header arrived and whether
 
 **`agent.yaml` is the agent**: prompt, model, MCP servers. The same for everyone running this relay, so it is checked in and must stay generic.
 
-**`capabilities.yaml` is one deployment's reach**: `sandbox`, `secrets` by name with the hosts each authenticates to, `egress`. It names the specific systems a deployment's workflows use, which is exactly what `agent.yaml` must not. Gitignored, with a committed `.example`. Absent means MCP only, no shell, no egress, so the template runs unconfigured.
+**`capabilities.yaml` is one deployment's reach**: `secrets` by name with the hosts each authenticates to, and `egress`. It names the specific systems a deployment's workflows use, which is exactly what `agent.yaml` must not. Gitignored, with a committed `.example`. Absent means MCP only and no egress, so the template runs unconfigured.
+
+**Never commit it, and do not let a script write an id into it.** This repo is public and its own template rule is that no account id belongs in it. `bin/capabilities-discover` therefore prints the agent, environment, vault and credential ids to **stderr** and the config to stdout, so redirecting the output cannot capture them. They are not credentials, but a reader cannot tell which opaque `vlt_` string is safe to expose, so none of them are treated as safe.
+
+Only `secrets` and `egress` live there, and only the reconcile scripts read them, which run on a machine that has the file. Anything the request path needs is an environment variable; that is the line, and it is why `sandbox` is `AGENT_SANDBOX`.
 
 **`AGENT_PROVIDER` is the only place any configuration names a provider.** Nothing else in either file does, and a test asserts no provider name appears as a key in `agent.yaml`. This was got wrong once, with `model`, `tools` and `environment` keyed under a `providers:` section: that is the two APIs' shapes written into a file whose job is to describe intent.
 

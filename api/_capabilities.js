@@ -21,18 +21,40 @@ const source = existsSync(path) ? parse(readFileSync(path, "utf8")) ?? {} : {};
 
 const SANDBOX = ["none", "hosted"];
 
+/**
+ * `sandbox` is an environment variable and the rest of this is a file, which
+ * looks arbitrary and is not. The relay needs the sandbox at request time --
+ * OpenAI sends environment.type inline on every session create -- and
+ * capabilities.yaml is gitignored, because it names one deployment's systems
+ * and this repo is public and must not carry them. A gitignored file is not in
+ * the Vercel build, so a runtime read of it would silently resolve to `none`
+ * and the agent would report that it cannot run commands, with nothing saying
+ * why.
+ *
+ * So the split is by who needs it, not by taste: the runtime reads env, and
+ * secrets and egress are only ever needed by the reconcile scripts, which run
+ * on a machine that has the file.
+ */
 function sandboxFrom(value) {
-  const sandbox = value ?? "none";
+  const sandbox = value?.trim() || "none";
   if (!SANDBOX.includes(sandbox)) {
-    throw new Error(`capabilities.yaml: sandbox "${sandbox}" is not one of: ${SANDBOX.join(", ")}`);
+    throw new Error(`AGENT_SANDBOX "${sandbox}" is not one of: ${SANDBOX.join(", ")}`);
   }
   return sandbox;
 }
 
-export const sandbox = sandboxFrom(source.sandbox);
+export const sandbox = sandboxFrom(process.env.AGENT_SANDBOX);
 
 /** True when the agent gets a container, and therefore a shell. */
 export const hasSandbox = sandbox === "hosted";
+
+// A leftover `sandbox:` key in the file is a config that looks set and is not.
+if (source.sandbox !== undefined) {
+  throw new Error(
+    "capabilities.yaml sets `sandbox`, which moved to the AGENT_SANDBOX environment variable " +
+      "because the relay needs it at request time and this file is not deployed. Remove the key.",
+  );
+}
 
 export const secrets = Object.freeze(
   (source.secrets ?? []).map((secret, index) => {

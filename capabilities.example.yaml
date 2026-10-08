@@ -13,17 +13,15 @@
 # Absent entirely is a valid and safe configuration: the agent reaches the MCP
 # servers in agent.yaml, has no shell, and can reach nothing else.
 
-# Whether the agent gets a container it can execute in, and therefore a shell.
+# NOTE: `sandbox` is NOT in this file. It is the AGENT_SANDBOX environment
+# variable, set to `none` or `hosted`, because the relay needs it on every
+# session create and this file is gitignored and therefore not deployed. A
+# `sandbox:` key here is refused rather than ignored.
 #
-#   none    MCP only. It cannot run commands, so it cannot reach a host that
-#           is not an MCP server however the egress list below is set.
+#   none    MCP only. The agent cannot run commands, so it cannot reach a host
+#           that is not an MCP server however the egress list below is set.
 #   hosted  The provider runs a container. The agent gets a shell, so every
 #           host in `egress` becomes reachable with curl, not only through MCP.
-#
-# This is a capability decision, not a provider one. An agent that only reads
-# and writes Manifestly needs `none`. One that calls an HTTP API the workflow
-# depends on needs `hosted`, and then the egress list is the real boundary.
-sandbox: none
 
 # Secrets the agent authenticates with, by NAME and by the hosts each one is
 # for. Never values: this file is committed, and a value here would be a
