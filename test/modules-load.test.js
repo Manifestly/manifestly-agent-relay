@@ -201,3 +201,45 @@ test("AGENT_EFFORT defaults differ by provider, and both preserve today's behavi
   if (previous === undefined) delete process.env.AGENT_EFFORT;
   else process.env.AGENT_EFFORT = previous;
 });
+
+// The bin scripts import from api/, and nothing executed them until a person
+// ran one. A refactor removed `manifestlyMcpUrl` from _agent_definition.js and
+// bin/openai-credential kept importing it; the sweep that should have caught it
+// used `--include='*.js'`, and these scripts have no extension, so grep skipped
+// the directory in silence. The break surfaced as a SyntaxError in someone's
+// terminal, mid-task.
+//
+// Static on purpose: importing them would run them, and several prompt for a
+// secret on stdin.
+test("every bin script imports names that api/ actually exports", async () => {
+  const { readdirSync, readFileSync, statSync } = await import("node:fs");
+
+  const exportsOf = (path) => {
+    const source = readFileSync(path, "utf8");
+    const names = new Set();
+    for (const [, name] of source.matchAll(/export\s+(?:const|function|let|class)\s+(\w+)/g)) names.add(name);
+    for (const [, group] of source.matchAll(/export\s*\{([^}]+)\}/g)) {
+      for (const entry of group.split(",")) names.add(entry.trim().split(/\s+as\s+/).pop().trim());
+    }
+    return names;
+  };
+
+  let checked = 0;
+  for (const entry of readdirSync("bin")) {
+    const script = `bin/${entry}`;
+    if (statSync(script).isDirectory()) continue;
+
+    for (const [, imported, target] of readFileSync(script, "utf8").matchAll(
+      /import\s*\{([^}]+)\}\s*from\s*"(\.\.\/api\/[^"]+)"/g,
+    )) {
+      const module = target.replace("../api/", "api/");
+      const available = exportsOf(module);
+      for (const name of imported.split(",").map((value) => value.trim())) {
+        assert.ok(available.has(name), `${script} imports ${name}, which ${module} does not export`);
+        checked += 1;
+      }
+    }
+  }
+
+  assert.ok(checked > 0, "found no bin imports to check, so this test is pinning nothing");
+});
