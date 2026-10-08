@@ -1,0 +1,183 @@
+#!/usr/bin/env node
+// Make a provider account match capabilities.yaml. Dry run unless --apply.
+//
+//   AGENT_PROVIDER=anthropic bin/capabilities-apply            # show the plan
+//   AGENT_PROVIDER=anthropic bin/capabilities-apply --apply    # do it
+//
+// This is the write half of bin/capabilities-discover, and the same division
+// holds: capabilities.yaml is neutral, and everything about how a provider is
+// told lives here and in api/providers/.
+//
+// It does NOT create a credential, because creating one needs its secret value
+// and bin/cma-credential and bin/openai-credential already take that through a
+// hidden prompt. A value typed here would be a value in somebody's shell
+// history. Missing credentials are reported with the command to run.
+//
+// It never deletes. A credential or host present at the provider and absent
+// from capabilities.yaml is reported as drift and left alone: this file is not
+// yet old enough to be trusted as the complete account of what is needed, and
+// deleting a credential an unrelated workflow depends on is not recoverable
+// from here.
+import { egress, sandbox, secrets } from "../api/_capabilities.js";
+import { mcpServers } from "../api/_agent_definition.js";
+import { env } from "../api/_config.js";
+
+const APPLY = process.argv.includes("--apply");
+const provider = process.env.AGENT_PROVIDER?.trim() || "anthropic";
+const plan = [];
+const manual = [];
+
+function die(message) {
+  process.stderr.write(`${message}\n`);
+  process.exit(1);
+}
+
+const sameHosts = (a = [], b = []) =>
+  a.length === b.length && [...a].sort().join() === [...b].sort().join();
+
+async function anthropic() {
+  const key = env("ANTHROPIC_API_KEY") ?? die("set ANTHROPIC_API_KEY");
+  const call = async (path, init = {}) => {
+    const response = await fetch(`https://api.anthropic.com/v1/${path}`, {
+      ...init,
+      headers: {
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": "managed-agents-2026-04-01",
+        ...(init.body ? { "content-type": "application/json" } : {}),
+      },
+    });
+    if (!response.ok) die(`${init.method ?? "GET"} /v1/${path} -> HTTP ${response.status}\n${(await response.text()).slice(0, 300)}`);
+    return response.json();
+  };
+
+  const only = async (collection, label) => {
+    const { data = [] } = await call(collection);
+    if (data.length === 1) return data[0];
+    die(`${data.length} ${collection}; set ${label}`);
+  };
+
+  const environmentId = env("ANTHROPIC_ENVIRONMENT_ID") ?? (await only("environments", "ANTHROPIC_ENVIRONMENT_ID")).id;
+  const vaultId = env("ANTHROPIC_VAULT_ID") ?? (await only("vaults", "ANTHROPIC_VAULT_ID")).id;
+
+  const environment = await call(`environments/${environmentId}`);
+  const current = environment.config?.networking ?? {};
+
+  // `networking` is documented as a full replacement, unlike the fields around
+  // it, so this is the one place a read-modify-write is actually required:
+  // sending allowed_hosts alone would drop allow_mcp_servers and cut the agent
+  // off from every MCP server with no error anywhere.
+  const desired = {
+    type: "limited",
+    allowed_hosts: [...egress].sort(),
+    allow_mcp_servers: mcpServers.length > 0,
+    allow_package_managers: current.allow_package_managers ?? false,
+  };
+
+  if (current.type === "unrestricted") {
+    manual.push(
+      `environment ${environmentId} is networking.type=unrestricted, which permits every host. ` +
+        `Applying would NARROW it to ${desired.allowed_hosts.length} host(s). Re-run with --apply only if that is what you mean.`,
+    );
+  }
+
+  if (!sameHosts(current.allowed_hosts, desired.allowed_hosts) || current.allow_mcp_servers !== desired.allow_mcp_servers) {
+    plan.push({
+      what: `environment ${environmentId} networking`,
+      from: `allowed_hosts=[${(current.allowed_hosts ?? []).join(", ")}] allow_mcp_servers=${current.allow_mcp_servers}`,
+      to: `allowed_hosts=[${desired.allowed_hosts.join(", ")}] allow_mcp_servers=${desired.allow_mcp_servers}`,
+      run: () => call(`environments/${environmentId}`, { method: "POST", body: JSON.stringify({ config: { ...environment.config, networking: desired } }) }),
+    });
+  }
+
+  const { data: credentials = [] } = await call(`vaults/${vaultId}/credentials`);
+  const byName = new Map(
+    credentials
+      .filter((credential) => (credential.auth ?? credential).type === "environment_variable")
+      .map((credential) => [(credential.auth ?? credential).secret_name ?? credential.display_name, credential]),
+  );
+
+  for (const secret of secrets) {
+    const credential = byName.get(secret.name);
+    if (!credential) {
+      manual.push(`secret ${secret.name} has no credential. Create it: bin/cma-credential  (hosts: ${secret.hosts.join(", ")})`);
+      continue;
+    }
+    const held = (credential.auth ?? credential).networking?.allowed_hosts ?? [];
+    if (!sameHosts(held, secret.hosts)) {
+      plan.push({
+        what: `credential ${secret.name} (${credential.id}) hosts`,
+        from: `[${held.join(", ")}]`,
+        to: `[${secret.hosts.join(", ")}]`,
+        // Also a full replacement, and omitting secret_value preserves it, so
+        // re-scoping a credential does not need the value.
+        run: () => call(`vaults/${vaultId}/credentials/${credential.id}`, {
+          method: "POST",
+          body: JSON.stringify({ auth: { type: "environment_variable", networking: { type: "limited", allowed_hosts: secret.hosts } } }),
+        }),
+      });
+    }
+    byName.delete(secret.name);
+  }
+
+  for (const [name, credential] of byName) {
+    manual.push(`credential ${name} (${credential.id}) exists at the provider and is not in capabilities.yaml. Left alone; add it or retire it with bin/cma-credential-rm.`);
+  }
+
+  // The shell is granted by the agent's tools rather than by the environment,
+  // so it is bin/agent-apply's to apply. Said here because this is where
+  // someone reconciling capabilities will look for it.
+  manual.push(`sandbox: ${sandbox} is applied by bin/agent-apply, not by this script.`);
+}
+
+async function openai() {
+  const { default: OpenAI } = await import("openai");
+  if (!env("OPENAI_API_KEY")) die("set OPENAI_API_KEY");
+  const vaultId = env("OPENAI_VAULT_ID") ?? die("set OPENAI_VAULT_ID");
+  const { data: credentials = [] } = await new OpenAI().beta.agents.vaults.credentials.list(vaultId);
+
+  const byName = new Map(
+    credentials
+      .filter((credential) => credential.auth?.type === "environment_variable")
+      .map((credential) => [credential.auth.secret_name ?? credential.name, credential]),
+  );
+
+  for (const secret of secrets) {
+    if (!byName.has(secret.name)) {
+      manual.push(`secret ${secret.name} has no credential. Create it: bin/openai-credential  (hosts: ${secret.hosts.join(", ")})`);
+    }
+  }
+
+  // No environment object to reconcile: environment.type is sent inline on
+  // every session, so api/providers/openai.js already applies the sandbox on
+  // its own and there is nothing for this script to write.
+  manual.push("this provider has no environment object; sandbox and egress take effect per session from capabilities.yaml with no apply step.");
+}
+
+// Resolve the function before calling it. `await fn?.() ?? die(...)` reads
+// fine and is wrong: a reconciler returns nothing, so the nullish branch fires
+// on success and reports a valid provider as unknown.
+const reconcile = { anthropic, openai }[provider];
+if (!reconcile) die(`AGENT_PROVIDER "${provider}" is not one of: anthropic, openai`);
+await reconcile();
+
+process.stdout.write(`provider: ${provider}\nsandbox: ${sandbox}\negress: ${egress.join(", ") || "(none)"}\n\n`);
+
+if (plan.length === 0) {
+  process.stdout.write("Nothing to change.\n");
+} else {
+  for (const change of plan) {
+    process.stdout.write(`${APPLY ? "applying" : "would change"}: ${change.what}\n  from ${change.from}\n    to ${change.to}\n`);
+  }
+  if (APPLY) {
+    for (const change of plan) await change.run();
+    process.stdout.write(`\nApplied ${plan.length} change(s).\n`);
+  } else {
+    process.stdout.write(`\n${plan.length} change(s). Re-run with --apply.\n`);
+  }
+}
+
+if (manual.length) {
+  process.stdout.write("\nNeeds a person:\n");
+  for (const note of manual) process.stdout.write(`  - ${note}\n`);
+}
