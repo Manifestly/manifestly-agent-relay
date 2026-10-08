@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { name as agentName, description, instructions, mcpServers, model } from "../_agent_definition.js";
+import { name as agentName, description, instructions, mcpServers } from "../_agent_definition.js";
 import { hasSandbox } from "../_capabilities.js";
 import { requiredEnv } from "../_config.js";
 
@@ -55,9 +55,11 @@ export function agentDefinition() {
   return {
     name: agentName,
     description,
-    // `effort` is an Anthropic knob, so it lives here rather than in agent.yaml,
-    // where it would have been one provider's vocabulary in a neutral file.
-    model: { id: model, effort: "high" },
+    // Read here rather than at the top of the file, so a running relay never
+    // needs it: sessions on this provider name a persisted agent that already
+    // carries its model, and only bin/agent-apply reaches this function.
+    // `effort` is an Anthropic knob and stays beside the call that sends it.
+    model: { id: requiredEnv("AGENT_MODEL"), effort: "high" },
     system: instructions,
     mcp_servers: mcpServers.map((server) => ({ type: "url", name: server.name, url: server.url })),
     tools: tools(),

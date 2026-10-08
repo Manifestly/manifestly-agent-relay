@@ -71,7 +71,7 @@ Then create an agent whose `mcp_servers` lists your Manifestly MCP server and wh
 *On OpenAI* (`AGENT_PROVIDER=openai`). `bin/openai-credential` creates the vault and adds a `static_bearer` credential carrying the agent's Manifestly API key, reading the server URL from `agent.yaml` so it cannot point at a server the agent never calls. `bin/openai-inspect` lists what exists and needs nothing but an API key. There is no agent object to create: the Agents API takes the whole definition on every session, so the relay sends `agent.yaml`'s system prompt inline. Three things are worth knowing before you start:
 
 - **The API key needs three scopes, not one.** Agents write, Vaults write, and Responses write. With Agents alone, session creation succeeds and the first *turn* returns `401 ... requires the api.responses.write permission`, which reads like a code problem. Permission changes also take a few minutes to propagate, and model validation runs before the permission check, so a bad model name produces a `400` that makes it look as though the credentials are fine.
-- **The Agents API is the Codex harness and refuses general models.** `gpt-5` is rejected outright. Set `model` in `agent.yaml`; switching `AGENT_PROVIDER` means changing it, and nothing validates the pairing because the provider's own API rejects a model that is not its own.
+- **The Agents API is the Codex harness and refuses general models.** `gpt-5` is rejected outright. Set `AGENT_MODEL`; it sits beside `AGENT_PROVIDER` because the two have to agree, and nothing validates the pairing since the provider's own API rejects a model that is not its own.
 - **Use no sandbox.** The relay sets `environment: { type: "none" }`, because an agent that only calls a remote MCP server does not need one and a hosted environment is a second thing that can fail to provision. The first attempt at this, before the relay supported it, died with `"The sandbox failed to connect."` and never ran.
 
 **Back in Manifestly.** Set this relay's URL as the agent's endpoint, then assign steps to the agent.
@@ -82,7 +82,7 @@ Inference is billed to your own provider account, not through Manifestly. What a
 
 Two files, and the line between them is worth getting right before you edit either.
 
-**`agent.yaml` is the agent.** Its prompt, its model, the MCP servers it calls. This is the same for everyone running this relay, which is why it is checked in and why it says nothing about any particular process: what the work *is* lives in each Manifestly workflow's step instructions. That split is what lets one agent serve every workflow, and lets whoever owns a process change it without touching this repo.
+**`agent.yaml` is the agent.** Its prompt and the MCP servers it calls. Not the model: that is `AGENT_MODEL`, because it has to match `AGENT_PROVIDER` and belongs next to it. This is the same for everyone running this relay, which is why it is checked in and why it says nothing about any particular process: what the work *is* lives in each Manifestly workflow's step instructions. That split is what lets one agent serve every workflow, and lets whoever owns a process change it without touching this repo.
 
 **`capabilities.yaml` is what your deployment lets it reach.** Copy `capabilities.example.yaml` and edit:
 

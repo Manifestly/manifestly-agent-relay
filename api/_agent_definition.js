@@ -54,17 +54,6 @@ export const mcpServers = required(source.mcp_servers, "no mcp_servers").map((se
  */
 
 /**
- * The model, as its provider names it. Not keyed by provider: AGENT_PROVIDER is
- * the only place this configuration names one, and a map here would have put
- * provider identity back into a file that describes the agent.
- *
- * Unvalidated against the selected provider on purpose. The provider's own API
- * rejects a model that is not its own with a message naming it, and a family
- * regex here would be a guess with a shelf life.
- */
-export const model = required(source.model, "no model");
-
-/**
  * The url for a named server, which is how anything refers to one without
  * repeating it. Throwing beats defaulting: naming a server that is not declared
  * is a typo, and the alternative is an agent started with a tool pointed

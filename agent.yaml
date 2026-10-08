@@ -69,20 +69,3 @@ system: |
 mcp_servers:
   - name: manifestly
     url: https://mcp.manifest.ly/mcp
-
-# The model, named the way its provider names it. A deployment is coupled to one
-# provider, so there is one model here rather than a choice keyed by provider:
-# AGENT_PROVIDER is the only place this configuration says "anthropic" or
-# "openai" at all, and keeping it that way is what stops provider shape leaking
-# into a file whose job is to describe the agent.
-#
-# Changing AGENT_PROVIDER means changing this too. Nothing validates the pairing
-# -- the provider's own API rejects a model that is not its own, and inventing a
-# family regex here would be a guess that goes stale -- so expect a 400 naming
-# the model if the two disagree.
-#
-# On OpenAI the Agents API is the Codex harness and refuses general models:
-# gpt-5 is rejected outright. Its model validation also runs BEFORE the
-# permission check, so a bad model produces a 400 that reads as a credentials
-# problem when it is not one.
-model: claude-opus-5
