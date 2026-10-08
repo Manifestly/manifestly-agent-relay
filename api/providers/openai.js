@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { instructions, mcpServers } from "../_agent_definition.js";
 import { hasSandbox } from "../_capabilities.js";
-import { requiredEnv } from "../_config.js";
+import { env, requiredEnv } from "../_config.js";
 
 /**
  * Everything this relay knows about OpenAI, and the only file that does.
@@ -33,6 +33,9 @@ function tools() {
     type: "mcp",
     server_label: server.name,
     transport: { type: "http", server_url: server.url },
+    // Null is this provider's "every tool", so the neutral "unset" maps
+    // straight onto it. Anthropic needs a different shape for the same thing.
+    allowed_tools: server.allowedTools ? [...server.allowedTools] : null,
     required: true,
     // Documented as the default. Pinned because the alternative origin is an
     // execution environment, which does not exist under `sandbox: none`.
@@ -59,7 +62,18 @@ function environment() {
  * definition on every create. agent.yaml is the one source for both.
  */
 function agentDefinition() {
-  return { model: requiredEnv("AGENT_MODEL"), instructions, tools: tools() };
+  const effort = env("AGENT_EFFORT");
+
+  return {
+    model: requiredEnv("AGENT_MODEL"),
+    instructions,
+    tools: tools(),
+    // Omitted when unset, which leaves the API's own default. Not defaulted to
+    // Anthropic's "high": that value is there to preserve a definition this
+    // provider has never had, and copying it across would raise this one's
+    // cost on the strength of the other's history.
+    ...(effort ? { reasoning: { effort } } : {}),
+  };
 }
 
 export async function createSession({ runId, brief }) {

@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { name as agentName, description, instructions, mcpServers } from "../_agent_definition.js";
 import { hasSandbox } from "../_capabilities.js";
-import { requiredEnv } from "../_config.js";
+import { env, requiredEnv } from "../_config.js";
 
 /**
  * Everything this relay knows about Anthropic, and the only file that does.
@@ -33,7 +33,18 @@ function tools() {
   const toolsets = mcpServers.map((server) => ({
     type: "mcp_toolset",
     mcp_server_name: server.name,
-    default_config: { permission_policy: { type: "always_allow" } },
+    // This provider has no allowed_tools array. An allowlist is expressed by
+    // turning every tool off by default and naming the ones that stay on, so
+    // the same neutral declaration becomes a different shape here than it does
+    // on OpenAI. Omitting allowed_tools leaves `enabled` unset, which the API
+    // defaults to true, which is every tool.
+    default_config: {
+      permission_policy: { type: "always_allow" },
+      ...(server.allowedTools ? { enabled: false } : {}),
+    },
+    ...(server.allowedTools
+      ? { configs: server.allowedTools.map((name) => ({ name, enabled: true })) }
+      : {}),
   }));
 
   // The agent toolset is what gives the agent a shell, so it is this provider's
@@ -59,7 +70,10 @@ export function agentDefinition() {
     // needs it: sessions on this provider name a persisted agent that already
     // carries its model, and only bin/agent-apply reaches this function.
     // `effort` is an Anthropic knob and stays beside the call that sends it.
-    model: { id: requiredEnv("AGENT_MODEL"), effort: "high" },
+    // Unset keeps "high", which is what this agent's definition has always
+    // shipped with. Defaulting to the API's own default instead would quietly
+    // re-tune the live agent the next time anyone ran bin/agent-apply.
+    model: { id: requiredEnv("AGENT_MODEL"), effort: env("AGENT_EFFORT") ?? "high" },
     system: instructions,
     mcp_servers: mcpServers.map((server) => ({ type: "url", name: server.name, url: server.url })),
     tools: tools(),

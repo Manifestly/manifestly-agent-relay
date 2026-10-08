@@ -40,6 +40,14 @@ export const mcpServers = required(source.mcp_servers, "no mcp_servers").map((se
   Object.freeze({
     name: required(server.name, "an mcp server has no name"),
     url: required(server.url, `mcp server "${server.name}" has no url`),
+    // Undefined means every tool the server exposes, which is what both
+    // providers do with no allowlist. An empty array is not the same thing and
+    // is refused: it would mean an agent with a server attached and no tool on
+    // it, which reads as "the agent is broken" rather than as a config choice.
+    allowedTools: server.allowed_tools
+      ? Object.freeze([...required(server.allowed_tools.length ? server.allowed_tools : null,
+          `mcp server "${server.name}" has an empty allowed_tools; omit the key to allow every tool`)])
+      : undefined,
   }),
 );
 

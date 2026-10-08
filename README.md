@@ -101,6 +101,20 @@ All of it is provider-agnostic, including `sandbox`. The two providers do not sh
 
 `bin/capabilities-apply` makes your provider account match the file. It is a dry run until you pass `--apply`, it never deletes anything, and it will not create a credential, since that needs the secret value and `bin/cma-credential` and `bin/openai-credential` already take one through a hidden prompt.
 
+## Cost knobs
+
+An agent's bill is mostly what it is told, repeatedly, rather than what it does. Two settings move it, in this order.
+
+**`allowed_tools`, on each server in `agent.yaml`.** A server's tool definitions are sent on every turn, so an agent that uses six tools out of ninety still pays for ninety descriptions each time it thinks. The Manifestly server exposes roughly ninety. Naming the ones a workflow actually needs is usually the largest single saving available.
+
+It ships unset, meaning every tool, because narrowing it wrongly breaks a running workflow and the right list is per deployment. Choose it by listing what the workflow's steps ask for, plus what the agent needs to report: reading runs and steps, writing step data, completing steps, commenting. Too narrow fails visibly, with the agent saying it has no tool for something, which is the safer direction to err in.
+
+**`AGENT_EFFORT`.** How hard the model works per turn. Anthropic takes `low|medium|high|xhigh|max` and defaults here to `high`; OpenAI takes those plus `none|minimal` and defaults to whatever the API does. The defaults deliberately preserve each provider's current behaviour rather than agreeing with each other.
+
+What is *not* a cost knob worth pulling: asking the agent to comment less. Its own comments do not start new turns — Manifestly does not notify an agent of its own comment — so they cost one message each, inside a turn it was already taking. A run that says nothing while it works is indistinguishable from one nobody started, and that visibility is worth more than the tokens.
+
+Measure before and after on the same workflow. Tool definitions being the bulk of a bill is the usual case, not a guarantee.
+
 ## Assigning steps
 
 Assign the step to the agent directly, or to a role the agent belongs to. Both work, and which event arrives depends on which you chose, which is why this relay does not filter on event name.
