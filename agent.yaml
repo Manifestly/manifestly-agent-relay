@@ -1,15 +1,16 @@
-# Applied with: ant beta:agents create < agent.yaml --transform id -r
+# The agent, for every provider. This file is the only definition of it.
 #
-# Deliberately says nothing about any particular process. What the work IS
-# lives in each Manifestly workflow's step instructions, which is what lets one
-# agent serve every workflow and lets the person who owns a process change it
-# without touching this file.
+# Anthropic takes a persisted agent, so bin/agent-apply syncs this file to it.
+# OpenAI takes the whole definition on each session create, so the relay reads
+# this file at runtime. Both read it through api/_agent_definition.js, so there
+# is one parser and no second copy of any value here.
+#
+# Deliberately says nothing about any particular process. What the work IS lives
+# in each Manifestly workflow's step instructions, which is what lets one agent
+# serve every workflow and lets the person who owns a process change it without
+# touching this file.
 name: Manifestly Ops Agent
 description: Works Manifestly run steps assigned to it, following each step's own instructions.
-
-model:
-  id: claude-opus-5
-  effort: high
 
 system: |
   You are an operations agent working inside Manifestly, a workflow and SOP platform.
@@ -60,20 +61,28 @@ system: |
     step you completed, so the person approving knows the work is ready rather
     than still arriving.
 
+# The servers the agent can call. Provider-agnostic: each adapter turns this
+# into its own tool vocabulary, which is why there is no tools list here. Both
+# providers are being told the same thing -- every declared server, with
+# permission pre-granted -- and api/providers/ holds each one's translation of
+# it along with the reason that translation is load-bearing.
 mcp_servers:
-  - type: url
-    name: manifestly
+  - name: manifestly
     url: https://mcp.manifest.ly/mcp
 
-tools:
-  # always_allow is load-bearing, not tidiness. mcp_toolset defaults to
-  # always_ask, which suspends every MCP call waiting for a tool_confirmation
-  # event. This agent is started by a fire-and-forget webhook relay with nobody
-  # listening to answer, so the default makes it emit tool calls and go idle
-  # with them pending, doing nothing and reporting nothing.
-  - type: mcp_toolset
-    mcp_server_name: manifestly
-    default_config:
-      permission_policy:
-        type: always_allow
-  - type: agent_toolset_20260401
+# The model, named the way its provider names it. A deployment is coupled to one
+# provider, so there is one model here rather than a choice keyed by provider:
+# AGENT_PROVIDER is the only place this configuration says "anthropic" or
+# "openai" at all, and keeping it that way is what stops provider shape leaking
+# into a file whose job is to describe the agent.
+#
+# Changing AGENT_PROVIDER means changing this too. Nothing validates the pairing
+# -- the provider's own API rejects a model that is not its own, and inventing a
+# family regex here would be a guess that goes stale -- so expect a 400 naming
+# the model if the two disagree.
+#
+# On OpenAI the Agents API is the Codex harness and refuses general models:
+# gpt-5 is rejected outright. Its model validation also runs BEFORE the
+# permission check, so a bad model produces a 400 that reads as a credentials
+# problem when it is not one.
+model: claude-opus-5

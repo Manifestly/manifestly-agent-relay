@@ -5,8 +5,10 @@ Receives the webhook Manifestly sends when a run step is assigned to an AI agent
 ## Commands
 
 - `npm test`: Node's built-in runner, no framework. Zero test dependencies on purpose.
-- `./bin/agent-json`: render `agent.yaml` as the JSON body `/v1/agents` expects
-- `./bin/agent-apply`: sync `agent.yaml` to the live agent (needs `ANTHROPIC_API_KEY`, `CMA_AGENT_ID`)
+- `./bin/agent-json`: render `agent.yaml` as the JSON body `/v1/agents` expects. Node, and it renders what the relay parses; it was Python and hardcoded everything but the prompt
+- `./bin/agent-apply`: sync `agent.yaml` to the live agent (needs `ANTHROPIC_API_KEY`, `ANTHROPIC_AGENT_ID`). Refuses without `capabilities.yaml`, because parts of the definition derive from it and applying `sandbox: none` blind takes a live agent's shell away
+- `./bin/capabilities-discover`: print the `capabilities.yaml` matching what a provider account already permits. Read-only, needs only the provider's API key, discovers every id itself
+- `./bin/capabilities-apply`: make a provider account match `capabilities.yaml`. Dry run unless `--apply`. Never creates a credential and never deletes anything
 - `./bin/cma-inspect`: list the vaults, environments, agents and credentials on the account (needs `ANTHROPIC_API_KEY` only)
 - `./bin/cma-credential`: add an `environment_variable` credential to a vault without the value entering shell history
 - `./bin/cma-credential-rm`: remove a credential from a vault, after showing what it is and asking. Hard delete, no undo
@@ -20,16 +22,20 @@ Receives the webhook Manifestly sends when a run step is assigned to an AI agent
 A deployment is coupled to one provider. Six required in production, all set through the Vercel CLI (see below):
 
 - `AGENT_PROVIDER`: which provider this deployment runs. Defaults to `anthropic` when unset; an unrecognised value throws at the first delivery rather than falling back, because the alternative to throwing is running the other one
+- `AGENT_SANDBOX`: `none` or `hosted`, whether the agent gets a shell. Defaults to `none`. It is an environment variable and not a `capabilities.yaml` key for one reason: the relay needs it on every OpenAI session create, and that file is gitignored and so absent from the Vercel build, where a runtime read would resolve to `none` and the agent would report that it cannot run commands with nothing saying why. A leftover `sandbox:` key in the file is refused rather than ignored
 
 - `MANIFESTLY_WEBHOOK_SIGNING_SECRET`: account-level, from Settings. Verify it is 32 hex characters
 - `ANTHROPIC_API_KEY`: the key sessions are created with. Scope it to one workspace
-- `CMA_AGENT_ID` / `CMA_ENVIRONMENT_ID` / `CMA_VAULT_ID`: what every session is started from
+- `ANTHROPIC_AGENT_ID` / `ANTHROPIC_ENVIRONMENT_ID` / `ANTHROPIC_VAULT_ID`: what every session is started from. Named `CMA_*` until 2026-10-08, which said nothing a reader could connect to `AGENT_PROVIDER=anthropic`; the old names are still read
 
 On an `AGENT_PROVIDER=openai` deployment those three are replaced by:
 
 - `OPENAI_API_KEY`: the key sessions are created with. It needs three scopes, not one: Agents write, Vaults write, and Responses write. Agents alone returns 401 at the first turn rather than at session creation, which reads as a code problem. Permission changes take minutes to propagate
 - `OPENAI_VAULT_ID`: holds a `static_bearer` credential carrying the agent's Manifestly API key, matched to the MCP server url
-- `OPENAI_MODEL`: optional, defaults to `gpt-6-astra`. The Agents API is the Codex harness and refuses general models
+
+There is no `OPENAI_MODEL`. The model is `agent.yaml`'s, for both providers, because it describes the agent rather than this account.
+
+`api/_config.js` is the list, with what needs each variable and why. It is also the only thing that reads `process.env` outside the handler, so adding a variable without adding it there is the drift to avoid. A missing id used to surface as a provider API error on the first real delivery, which reads as a code fault.
 
 Two more so a run can find its session, supplied by the Upstash Redis marketplace integration under either spelling:
 
@@ -126,11 +132,23 @@ A missing or unset signing secret rejects everything. A bad signature rejects. A
 
 The 401 path logs three facts, body size, whether the header arrived and whether a secret is configured, because a bare 401 is indistinguishable from a platform login page returning the same status, which cost an afternoon. It logs no secret material and no digests.
 
-## agent.yaml Is The Source Of Truth
+## Two Config Files, And The Line Between Them
 
-The agent's system prompt, model, tools and MCP servers live in `agent.yaml`. `bin/agent-json` renders it; `agent.json` is generated and gitignored. Never hand-maintain a second copy. Two files that must agree is the drift this repo exists to avoid.
+**`agent.yaml` is the agent**: prompt, model, MCP servers. The same for everyone running this relay, so it is checked in and must stay generic.
 
-**It now has two readers, in two languages.** Anthropic takes a persisted agent, so `bin/agent-apply` syncs the rendered definition and the relay never sends a prompt. OpenAI takes the whole definition inline on every session create, so `api/_agent_definition.js` reads the same file at runtime. Its split rule is deliberately identical to `bin/agent-json`'s; they are twins, and a change to one is a change to both. A test asserts the two produce the same prompt.
+**`capabilities.yaml` is one deployment's reach**: `secrets` by name with the hosts each authenticates to, and `egress`. It names the specific systems a deployment's workflows use, which is exactly what `agent.yaml` must not. Gitignored, with a committed `.example`. Absent means MCP only and no egress, so the template runs unconfigured.
+
+**Never commit it, and do not let a script write an id into it.** This repo is public and its own template rule is that no account id belongs in it. `bin/capabilities-discover` therefore prints the agent, environment, vault and credential ids to **stderr** and the config to stdout, so redirecting the output cannot capture them. They are not credentials, but a reader cannot tell which opaque `vlt_` string is safe to expose, so none of them are treated as safe.
+
+Only `secrets` and `egress` live there, and only the reconcile scripts read them, which run on a machine that has the file. Anything the request path needs is an environment variable; that is the line, and it is why `sandbox` is `AGENT_SANDBOX`.
+
+**`AGENT_PROVIDER` is the only place any configuration names a provider.** Nothing else in either file does, and a test asserts no provider name appears as a key in `agent.yaml`. This was got wrong once, with `model`, `tools` and `environment` keyed under a `providers:` section: that is the two APIs' shapes written into a file whose job is to describe intent.
+
+So there is no `tools` list in either file. Both providers are told one thing -- every declared server, with permission pre-granted -- in different vocabularies, and each adapter builds its own from `mcpServers`. `always_allow` and `required: true` live next to the code that emits them, with the reason each is load-bearing. `agent_toolset_20260401` is likewise how Anthropic grants a shell, which is that adapter's business and appears in no config file.
+
+**One parser, one reader.** `api/_agent_definition.js` parses `agent.yaml` with the `yaml` package and `bin/agent-json` renders what it parses. Before 2026-10-08 there were three readers and two of them did not parse: `bin/agent-json` hardcoded name, description, model, `mcp_servers` and `tools` as Python literals and read only the system block, and `_agent_definition.js` scraped the server url with a regex matching the first `url:` line in the file, which silently drops a second `mcp_servers` entry. The file this repo called its source of truth held a second copy of every value except the prompt.
+
+The test that `bin/agent-json` renders the file catches **drift, not duplication**: a hardcoded value that happens to agree still passes. Verified by mutation in both directions.
 
 `agent.yaml` is imported by nothing, so Vercel will not trace it. It ships because `vercel.json` names it in `includeFiles`. If that regresses, an OpenAI deployment throws at module load rather than starting an agent with no instructions.
 
@@ -186,7 +204,9 @@ The README lists the ones that bite during setup. These matter when changing `ag
 
 - Discovery needs only the API key. `GET /vaults`, `GET /environments` and `GET /agents` list them, so no id has to be known in advance. The ids are not secret; only the key is.
 - Vault credentials hang off a sub-resource: `GET /vaults/{id}/credentials`. The vault object itself carries no credentials. Reads never return secret values.
-- **Updating an environment is `POST`, not `PATCH`, and it REPLACES the config.** `PATCH` returns 405. Send the whole `config` object back or you silently drop whatever you omitted, and dropping `allow_mcp_servers: true` cuts the agent off from MCP with no error anywhere. Read, modify, write.
+- **Updating an environment is `POST`, not `PATCH`, and it MERGES.** `PATCH` returns 405; the SDK's `update` posts to `/v1/environments/{id}`. Omitted fields preserve the existing value, at the top level and inside `config`, which the SDK states outright: *"Fields default to null; on update, omitted fields preserve the existing value."* To change one thing, send one thing.
+  This entry said the opposite for months -- that `config` was replaced wholesale and needed read-modify-write -- and that advice was worse than useless, because read-modify-write is itself how you clobber a field you did not read. Neither object needs it: the README records that credentials are independent objects with "no read-modify-write to get wrong here", observed while widening the GitHub token's scope, and the environment merges per the types above.
+  **The one real replace is `config.networking`**, because it is a discriminated union of `unrestricted` and `limited` rather than a bag of fields, so sending it at all means sending a whole policy. Inside it, `allow_mcp_servers` is documented as "Defaults to `false`" without the "on creation" qualifier its sibling `allow_package_managers` carries, so assume a `networking` that omits it turns MCP egress off, which cuts the agent off from its servers with no error anywhere. Send `allow_mcp_servers` whenever you send `networking`. Whether it truly resets on update is not established from the types and has not been tested; test it rather than trusting either reading.
 - The secret field on a credential create is `auth.secret_value`. The API names missing fields one at a time, so an empty body is a usable schema probe and creates nothing.
 
 **Credential types are a constraint, not a style choice.** `static_bearer` takes `mcp_server_url` and nothing else, so it cannot authenticate an ordinary host. `environment_variable` is the egress-substituted form for everything else, carrying `injection_location` and its own `networking.allowed_hosts`. The name misleads: the value is injected into headers at the proxy and never enters the sandbox, which is the property you want when the agent writes prose into systems people read. Mirror an existing credential's shape rather than reasoning from the names; the README's earlier wording read as though the two were alternatives and sent a reader to the wrong one.

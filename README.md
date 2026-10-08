@@ -49,6 +49,8 @@ Then take the webhook signing secret from Settings > Account. Two things to know
 
 *On Anthropic* (`AGENT_PROVIDER=anthropic`, the default). Create a vault, an environment and an agent. `bin/cma-inspect` lists all three for your account and needs nothing but an API key, so run it first and after every change.
 
+If you already set an account up by hand, `bin/capabilities-discover` reads it back as a `capabilities.yaml` so you do not have to reconstruct it from memory. Run it before `bin/agent-apply`, which refuses without that file.
+
 The vault holds one credential per service the agent reaches. The two credential types are not interchangeable and the names do not suggest what they do:
 
 - `static_bearer` is for MCP servers only. Its one field is `mcp_server_url`. It cannot authenticate an ordinary host.
@@ -69,12 +71,35 @@ Then create an agent whose `mcp_servers` lists your Manifestly MCP server and wh
 *On OpenAI* (`AGENT_PROVIDER=openai`). `bin/openai-credential` creates the vault and adds a `static_bearer` credential carrying the agent's Manifestly API key, reading the server URL from `agent.yaml` so it cannot point at a server the agent never calls. `bin/openai-inspect` lists what exists and needs nothing but an API key. There is no agent object to create: the Agents API takes the whole definition on every session, so the relay sends `agent.yaml`'s system prompt inline. Three things are worth knowing before you start:
 
 - **The API key needs three scopes, not one.** Agents write, Vaults write, and Responses write. With Agents alone, session creation succeeds and the first *turn* returns `401 ... requires the api.responses.write permission`, which reads like a code problem. Permission changes also take a few minutes to propagate, and model validation runs before the permission check, so a bad model name produces a `400` that makes it look as though the credentials are fine.
-- **The Agents API is the Codex harness and refuses general models.** `gpt-5` is rejected outright. `OPENAI_MODEL` defaults to `gpt-6-astra`.
+- **The Agents API is the Codex harness and refuses general models.** `gpt-5` is rejected outright. Set `model` in `agent.yaml`; switching `AGENT_PROVIDER` means changing it, and nothing validates the pairing because the provider's own API rejects a model that is not its own.
 - **Use no sandbox.** The relay sets `environment: { type: "none" }`, because an agent that only calls a remote MCP server does not need one and a hosted environment is a second thing that can fail to provision. The first attempt at this, before the relay supported it, died with `"The sandbox failed to connect."` and never ran.
 
 **Back in Manifestly.** Set this relay's URL as the agent's endpoint, then assign steps to the agent.
 
 Inference is billed to your own provider account, not through Manifestly. What a run costs depends entirely on what your workflow asks the agent to do, so watch the first few before scheduling anything daily.
+
+## What the agent is, and what it may reach
+
+Two files, and the line between them is worth getting right before you edit either.
+
+**`agent.yaml` is the agent.** Its prompt, its model, the MCP servers it calls. This is the same for everyone running this relay, which is why it is checked in and why it says nothing about any particular process: what the work *is* lives in each Manifestly workflow's step instructions. That split is what lets one agent serve every workflow, and lets whoever owns a process change it without touching this repo.
+
+**`capabilities.yaml` is what your deployment lets it reach.** Copy `capabilities.example.yaml` and edit:
+
+```yaml
+sandbox: none                      # or hosted, if the agent must run commands
+secrets:
+  - name: SOME_API_WRITE_TOKEN     # names only, never values
+    hosts: [api.example.com]       # what this secret authenticates to
+egress:
+  - status.example.com             # reachable, with or without a secret
+```
+
+Leave it out entirely and the agent reaches your MCP servers, has no shell, and can reach nothing else. That is a real configuration, not a stub, and it is the right one for an agent that only reads and writes Manifestly.
+
+All of it is provider-agnostic, including `sandbox`. The two providers do not share that concept: OpenAI takes an environment type inline per session and has a real "none", while Anthropic's environment is a required account object with no "none" to ask for, so the same intent is expressed by what that environment permits. `AGENT_PROVIDER` is the only place any configuration names a provider at all. Which vault, environment or toolset carries your declaration is in `api/providers/` and is not something you should have to care about.
+
+`bin/capabilities-apply` makes your provider account match the file. It is a dry run until you pass `--apply`, it never deletes anything, and it will not create a credential, since that needs the secret value and `bin/cma-credential` and `bin/openai-credential` already take one through a hidden prompt.
 
 ## Assigning steps
 

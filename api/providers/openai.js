@@ -1,5 +1,7 @@
 import OpenAI from "openai";
-import { instructions, manifestlyMcpUrl } from "../_agent_definition.js";
+import { instructions, mcpServers, model } from "../_agent_definition.js";
+import { hasSandbox } from "../_capabilities.js";
+import { requiredEnv } from "../_config.js";
 
 /**
  * Everything this relay knows about OpenAI, and the only file that does.
@@ -10,48 +12,61 @@ import { instructions, manifestlyMcpUrl } from "../_agent_definition.js";
  */
 export const name = "openai";
 
-// The Agents API is the Codex harness and refuses general models: gpt-5 is
-// rejected outright. Model validation also runs BEFORE the permission check,
-// so a bad model produces a 400 that looks like the credentials are fine.
-const MODEL = process.env.OPENAI_MODEL?.trim() || "gpt-6-astra";
-
 let client;
 function openai() {
   client ??= new OpenAI();
   return client;
 }
 
-// Unlike Anthropic, which takes a persisted agent id, OpenAI takes the whole
-// definition on every create. agent.yaml is still the one source for both.
+/**
+ * This provider's translation of "every declared server, with permission
+ * pre-granted", which is what agent.yaml says neutrally.
+ *
+ * `required: true` is the load-bearing part. It defaults to false, which
+ * silently drops a server that will not connect: the turn then completes and
+ * the agent writes a confident answer saying it has no tools, with no error
+ * anywhere. Observed. It is this provider's equivalent of Anthropic needing
+ * always_allow, and for the same reason -- nobody is listening to intervene.
+ */
+function tools() {
+  return mcpServers.map((server) => ({
+    type: "mcp",
+    server_label: server.name,
+    transport: { type: "http", server_url: server.url },
+    required: true,
+    // Documented as the default. Pinned because the alternative origin is an
+    // execution environment, which does not exist under `sandbox: none`.
+    connection_origin: "service",
+  }));
+}
+
+/**
+ * `sandbox` from capabilities.yaml, in this provider's vocabulary.
+ *
+ * Here it is an inline per-session field and "none" is real, which is why the
+ * neutral config does not borrow Anthropic's environment_id shape: that is a
+ * required id naming a persisted account object, so the same intent has to be
+ * expressed there by what the environment permits rather than by asking for
+ * nothing. Translating in both adapters is cheaper than one config pretending
+ * the two APIs agree.
+ */
+function environment() {
+  return { type: hasSandbox ? "openai_hosted" : "none" };
+}
+
+/**
+ * Unlike Anthropic, which takes a persisted agent id, OpenAI takes the whole
+ * definition on every create. agent.yaml is the one source for both.
+ */
 function agentDefinition() {
-  return {
-    model: MODEL,
-    instructions,
-    tools: [
-      {
-        type: "mcp",
-        server_label: "manifestly",
-        transport: { type: "http", server_url: manifestlyMcpUrl },
-        // Defaults to false, which silently drops a server that will not
-        // connect. The turn then completes and the agent writes a confident
-        // answer saying it has no tools, with no error anywhere. Observed.
-        required: true,
-        // Documented as the default, pinned because environment is "none" and
-        // the alternative origin is an execution environment that will not exist.
-        connection_origin: "service",
-      },
-    ],
-  };
+  return { model, instructions, tools: tools() };
 }
 
 export async function createSession({ runId, brief }) {
   const session = await openai().beta.agents.sessions.create({
     agent: agentDefinition(),
-    // No sandbox. This agent only calls a remote MCP server, and a hosted
-    // environment is a second thing that can fail to provision: the one
-    // earlier attempt at this died with "The sandbox failed to connect".
-    environment: { type: "none" },
-    vault_ids: [process.env.OPENAI_VAULT_ID],
+    environment: environment(),
+    vault_ids: [requiredEnv("OPENAI_VAULT_ID")],
     metadata: { manifestly_run_id: String(runId) },
     input: brief,
   });

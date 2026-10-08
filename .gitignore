@@ -8,3 +8,6 @@ agent.json
 .agents/
 .claude/
 skills-lock.json
+
+# One deployment reach, not the template. See capabilities.example.yaml
+capabilities.yaml

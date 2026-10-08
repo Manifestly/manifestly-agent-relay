@@ -1,43 +1,11 @@
-#!/usr/bin/env python3
-"""Emit agent.yaml as the JSON body /v1/agents expects.
+#!/usr/bin/env node
+// Print agent.yaml as the JSON body POST /v1/agents expects.
+//
+// Was Python, and hardcoded name, description, model, mcp_servers and tools as
+// literals while reading only the system block from agent.yaml. So the file
+// this repo calls its source of truth held a second copy of every value except
+// the prompt, and nothing made the two agree. This renders what the relay
+// itself parses, which is the only way the two cannot drift.
+import { agentDefinition } from "../api/providers/anthropic.js";
 
-agent.yaml is the source of truth because a 1500-character system prompt is
-editable there and is not once escaped into a JSON string. This exists so the
-JSON is always generated rather than a second copy that silently drifts.
-"""
-import json
-import pathlib
-import sys
-
-root = pathlib.Path(__file__).resolve().parent.parent
-yaml = (root / "agent.yaml").read_text()
-
-block = yaml.split("system: |\n", 1)[1].split("\nmcp_servers:", 1)[0]
-system = "\n".join(
-    line[2:] if line.startswith("  ") else line for line in block.split("\n")
-).strip() + "\n"
-
-json.dump(
-    {
-        "name": "Manifestly Ops Agent",
-        "description": "Works Manifestly run steps assigned to it, following each step's own instructions.",
-        "model": {"id": "claude-opus-5", "effort": "high"},
-        "system": system,
-        "mcp_servers": [
-            {"type": "url", "name": "manifestly", "url": "https://mcp.manifest.ly/mcp"}
-        ],
-        "tools": [
-            {
-                "type": "mcp_toolset",
-                "mcp_server_name": "manifestly",
-                # Without this the toolset defaults to always_ask and every MCP
-                # call hangs waiting for a confirmation nobody sends.
-                "default_config": {"permission_policy": {"type": "always_allow"}},
-            },
-            {"type": "agent_toolset_20260401"},
-        ],
-    },
-    sys.stdout,
-    indent=2,
-)
-print()
+process.stdout.write(JSON.stringify(agentDefinition(), null, 2) + "\n");

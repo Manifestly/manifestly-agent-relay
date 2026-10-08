@@ -1,10 +1,13 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { name as agentName, description, instructions, mcpServers, model } from "../_agent_definition.js";
+import { hasSandbox } from "../_capabilities.js";
+import { requiredEnv } from "../_config.js";
 
 /**
  * Everything this relay knows about Anthropic, and the only file that does.
  *
- * The seam is two calls and one predicate. The orchestration around them —
- * single flight, the run-and-agent pointer, the deferral — is a statement
+ * The seam is two calls and one predicate. The orchestration around them --
+ * single flight, the run-and-agent pointer, the deferral -- is a statement
  * about Manifestly's delivery contract rather than about any provider, and
  * stays in _session.js where it belongs.
  */
@@ -16,11 +19,56 @@ function anthropic() {
   return client;
 }
 
+/**
+ * This provider's translation of "every declared server, with permission
+ * pre-granted", which is what agent.yaml says neutrally.
+ *
+ * always_allow is load-bearing, not tidiness. mcp_toolset defaults to
+ * always_ask, which suspends every MCP call waiting for a tool_confirmation
+ * event. This agent is started by a fire-and-forget webhook relay with nobody
+ * listening to answer, so the default makes it emit tool calls and go idle with
+ * them pending, doing nothing and reporting nothing.
+ */
+function tools() {
+  const toolsets = mcpServers.map((server) => ({
+    type: "mcp_toolset",
+    mcp_server_name: server.name,
+    default_config: { permission_policy: { type: "always_allow" } },
+  }));
+
+  // The agent toolset is what gives the agent a shell, so it is this provider's
+  // expression of `sandbox: hosted`. Anthropic has no "no environment" to ask
+  // for -- environment_id is required on every session -- so the capability
+  // shows up in the tools rather than in the session call.
+  return hasSandbox ? [...toolsets, { type: "agent_toolset_20260401" }] : toolsets;
+}
+
+/**
+ * The body POST /v1/agents expects, rendered from agent.yaml.
+ *
+ * Unused at session create, because this provider runs a persisted agent named
+ * by ANTHROPIC_AGENT_ID. bin/agent-json prints this and bin/agent-apply PUTs
+ * it, which is what keeps the live agent equal to the checked-in file. It lives
+ * here rather than in _agent_definition.js because the shape is Anthropic's.
+ */
+export function agentDefinition() {
+  return {
+    name: agentName,
+    description,
+    // `effort` is an Anthropic knob, so it lives here rather than in agent.yaml,
+    // where it would have been one provider's vocabulary in a neutral file.
+    model: { id: model, effort: "high" },
+    system: instructions,
+    mcp_servers: mcpServers.map((server) => ({ type: "url", name: server.name, url: server.url })),
+    tools: tools(),
+  };
+}
+
 export async function createSession({ runId, brief }) {
   const session = await anthropic().beta.sessions.create({
-    agent: process.env.CMA_AGENT_ID,
-    environment_id: process.env.CMA_ENVIRONMENT_ID,
-    vault_ids: [process.env.CMA_VAULT_ID],
+    agent: requiredEnv("ANTHROPIC_AGENT_ID"),
+    environment_id: requiredEnv("ANTHROPIC_ENVIRONMENT_ID"),
+    vault_ids: [requiredEnv("ANTHROPIC_VAULT_ID")],
     title: `Manifestly run ${runId}`,
     metadata: { manifestly_run_id: String(runId) },
     initial_events: [{ type: "user.message", content: [{ type: "text", text: brief }] }],
