@@ -23,6 +23,8 @@ here=$(cd "$(dirname "$0")" && pwd)
 #
 # So this refuses, where the relay itself defaults. The dangerous direction is
 # mutating the live agent, not answering a webhook.
+: "${AGENT_MODEL:?set AGENT_MODEL to the model this agent runs}"
+
 if [ -z "${AGENT_SANDBOX:-}" ]; then
   echo "AGENT_SANDBOX is unset, so this would apply sandbox: none." >&2
   echo "That removes the agent's shell if it currently has one." >&2

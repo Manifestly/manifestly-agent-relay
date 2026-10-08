@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { instructions, mcpServers, model } from "../_agent_definition.js";
+import { instructions, mcpServers } from "../_agent_definition.js";
 import { hasSandbox } from "../_capabilities.js";
 import { requiredEnv } from "../_config.js";
 
@@ -59,7 +59,7 @@ function environment() {
  * definition on every create. agent.yaml is the one source for both.
  */
 function agentDefinition() {
-  return { model, instructions, tools: tools() };
+  return { model: requiredEnv("AGENT_MODEL"), instructions, tools: tools() };
 }
 
 export async function createSession({ runId, brief }) {

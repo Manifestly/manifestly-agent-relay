@@ -22,6 +22,7 @@ Receives the webhook Manifestly sends when a run step is assigned to an AI agent
 A deployment is coupled to one provider. Six required in production, all set through the Vercel CLI (see below):
 
 - `AGENT_PROVIDER`: which provider this deployment runs. Defaults to `anthropic` when unset; an unrecognised value throws at the first delivery rather than falling back, because the alternative to throwing is running the other one
+- `AGENT_MODEL`: the model sessions run, named the way its provider names it. Deployment config rather than part of the agent, because one `agent.yaml` cannot carry a model for two deployments on different providers and we run both. It sits beside `AGENT_PROVIDER`, which is the thing it has to agree with; nothing validates the pairing, because the provider's own API rejects a model that is not its own and a family regex here would be a guess with a shelf life. Required at runtime only on OpenAI, which sends the model on every session create. On Anthropic sessions name a persisted agent that already carries its model, so only `bin/agent-apply` needs it
 - `AGENT_SANDBOX`: `none` or `hosted`, whether the agent gets a shell. Defaults to `none`. It is an environment variable and not a `capabilities.yaml` key for one reason: the relay needs it on every OpenAI session create, and that file is gitignored and so absent from the Vercel build, where a runtime read would resolve to `none` and the agent would report that it cannot run commands with nothing saying why. A leftover `sandbox:` key in the file is refused rather than ignored
 
 - `MANIFESTLY_WEBHOOK_SIGNING_SECRET`: account-level, from Settings. Verify it is 32 hex characters
@@ -134,7 +135,7 @@ The 401 path logs three facts, body size, whether the header arrived and whether
 
 ## Two Config Files, And The Line Between Them
 
-**`agent.yaml` is the agent**: prompt, model, MCP servers. The same for everyone running this relay, so it is checked in and must stay generic.
+**`agent.yaml` is the agent**: prompt, MCP servers. No model: see `AGENT_MODEL` above. The same for everyone running this relay, so it is checked in and must stay generic.
 
 **`capabilities.yaml` is one deployment's reach**: `secrets` by name with the hosts each authenticates to, and `egress`. It names the specific systems a deployment's workflows use, which is exactly what `agent.yaml` must not. Gitignored, with a committed `.example`. Absent means MCP only and no egress, so the template runs unconfigured.
 

@@ -35,6 +35,7 @@ const BY_PROVIDER = {
   ],
   openai: [
     { name: "OPENAI_API_KEY", why: "creates sessions; needs Agents, Vaults and Responses write" },
+    { name: "AGENT_MODEL", why: "the model sessions run, named the way this provider names it" },
     { name: "OPENAI_VAULT_ID", why: "holds the agent's Manifestly bearer; attachable only at create" },
   ],
 };
@@ -44,6 +45,7 @@ const BY_PROVIDER = {
 const OPTIONAL = [
   { name: "AGENT_PROVIDER", why: "which provider this deployment runs; defaults to anthropic" },
   { name: "AGENT_SANDBOX", why: "none or hosted; whether the agent gets a shell. Defaults to none" },
+  { name: "AGENT_MODEL", why: "on anthropic this is needed only by bin/agent-apply, since sessions run a persisted agent that already carries its model" },
   { name: "KV_REST_API_URL", why: "session store; or UPSTASH_REDIS_REST_URL" },
   { name: "KV_REST_API_TOKEN", why: "session store; or UPSTASH_REDIS_REST_TOKEN" },
 ];

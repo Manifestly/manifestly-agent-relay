@@ -89,9 +89,33 @@ test("agent.yaml does not name a provider", async () => {
   }
 });
 
-test("the model is one value, not a choice keyed by provider", async () => {
-  const { model } = await import("../api/_agent_definition.js");
-  assert.equal(typeof model, "string", "a map here would put provider identity back in agent.yaml");
+// The model moved to AGENT_MODEL. One agent.yaml cannot carry a model for two
+// deployments on different providers, and we run both: the file held
+// claude-opus-5, so an OpenAI deployment would have sent a Claude id and got a
+// 400 reading like a credentials problem. It is deployment config, like the
+// vault id and the sandbox, and it now sits beside AGENT_PROVIDER, which is
+// the thing it has to agree with.
+test("agent.yaml declares no model", async () => {
+  const { readFileSync } = await import("node:fs");
+  const declared = readFileSync("agent.yaml", "utf8")
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("#"))
+    .join("\n");
+  assert.doesNotMatch(declared, /^\s*model\s*:/m, "the model is AGENT_MODEL, not an agent.yaml key");
+});
+
+test("each provider reads the model from AGENT_MODEL", async () => {
+  const previous = process.env.AGENT_MODEL;
+  const { agentDefinition } = await import("../api/providers/anthropic.js");
+
+  process.env.AGENT_MODEL = "a-model";
+  assert.equal(agentDefinition().model.id, "a-model");
+
+  delete process.env.AGENT_MODEL;
+  assert.throws(() => agentDefinition(), /AGENT_MODEL is not set/);
+
+  if (previous === undefined) delete process.env.AGENT_MODEL;
+  else process.env.AGENT_MODEL = previous;
 });
 
 test("the openai provider module loads and exposes the surface", async () => {
@@ -107,13 +131,13 @@ test("the openai provider module loads and exposes the surface", async () => {
 // body comes from the file rather than from literals in either place.
 test("bin/agent-json renders agent.yaml rather than a second copy of it", async () => {
   const { execFileSync } = await import("node:child_process");
-  const { instructions, name, description, mcpServers, model } = await import("../api/_agent_definition.js");
-  const rendered = JSON.parse(execFileSync("./bin/agent-json", { encoding: "utf8" }));
+  const { instructions, name, description, mcpServers } = await import("../api/_agent_definition.js");
+  const rendered = JSON.parse(execFileSync("./bin/agent-json", { encoding: "utf8", env: { ...process.env, AGENT_MODEL: "a-model" } }));
 
+  assert.equal(rendered.model.id, "a-model");
   assert.equal(rendered.system, instructions);
   assert.equal(rendered.name, name);
   assert.equal(rendered.description, description);
-  assert.equal(rendered.model.id, model);
   assert.deepEqual(
     rendered.mcp_servers,
     mcpServers.map((server) => ({ type: "url", name: server.name, url: server.url })),
@@ -128,6 +152,7 @@ test("the shell is granted by the sandbox capability, not named in config", asyn
   const { readFileSync } = await import("node:fs");
   const { agentDefinition } = await import("../api/providers/anthropic.js");
   const { hasSandbox } = await import("../api/_capabilities.js");
+  process.env.AGENT_MODEL ??= "a-model";
 
   for (const file of ["agent.yaml", "capabilities.example.yaml"]) {
     assert.doesNotMatch(readFileSync(file, "utf8"), /agent_toolset/, `${file} must not name a toolset`);
