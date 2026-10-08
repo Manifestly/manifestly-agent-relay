@@ -45,6 +45,7 @@ const BY_PROVIDER = {
 const OPTIONAL = [
   { name: "AGENT_PROVIDER", why: "which provider this deployment runs; defaults to anthropic" },
   { name: "AGENT_SANDBOX", why: "none or hosted; whether the agent gets a shell. Defaults to none" },
+  { name: "AGENT_EFFORT", why: "how hard the model works per turn, the second cost knob after allowed_tools. anthropic: low|medium|high|xhigh|max, default high. openai: none|minimal|low|medium|high|xhigh|max, default the API's" },
   { name: "AGENT_MODEL", why: "on anthropic this is needed only by bin/agent-apply, since sessions run a persisted agent that already carries its model" },
   { name: "KV_REST_API_URL", why: "session store; or UPSTASH_REDIS_REST_URL" },
   { name: "KV_REST_API_TOKEN", why: "session store; or UPSTASH_REDIS_REST_TOKEN" },

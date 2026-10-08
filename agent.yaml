@@ -69,3 +69,25 @@ system: |
 mcp_servers:
   - name: manifestly
     url: https://mcp.manifest.ly/mcp
+    # allowed_tools: the tools the agent may call from this server. Omit it and
+    # the agent gets every tool the server exposes.
+    #
+    # THIS IS THE LARGEST COST KNOB HERE. A server's tool definitions are sent
+    # on every turn, so an agent using six tools out of ninety still pays for
+    # ninety descriptions each time it thinks. The Manifestly server exposes
+    # roughly ninety.
+    #
+    # Choose by listing what the workflow's steps actually ask for, then add
+    # what the agent needs to report: reading runs and steps, writing step
+    # data, completing steps, commenting. Too narrow fails visibly -- the agent
+    # says it has no tool for something -- which is the safer direction.
+    #
+    # Left unset deliberately rather than guessed: narrowing it wrongly breaks
+    # a running workflow, and the right list is per deployment.
+    #
+    # allowed_tools:
+    #   - get_run
+    #   - get_run_step
+    #   - list_my_assignments
+    #   - add_comment
+    #   - complete_run_step

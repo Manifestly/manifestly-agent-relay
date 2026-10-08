@@ -166,3 +166,38 @@ test("the shell is granted by the sandbox capability, not named in config", asyn
   );
   assert.ok(toolsets.includes("mcp_toolset"), "the mcp toolset is always present");
 });
+
+// The two cost knobs. Both default to changing nothing, which is the property
+// that matters: a running deployment must not be re-tuned by code that merely
+// made tuning possible.
+test("an unset allowed_tools leaves every tool available, on both providers", async () => {
+  process.env.AGENT_MODEL ??= "a-model";
+  const { mcpServer } = await import("../api/_agent_definition.js");
+  const { agentDefinition } = await import("../api/providers/anthropic.js");
+
+  assert.equal(mcpServer("manifestly").allowedTools, undefined, "agent.yaml ships no allowlist");
+
+  // Anthropic has no allowed_tools array: an allowlist is `enabled: false` plus
+  // per-tool overrides, so the tell that none is in force is the absence of both.
+  const toolset = agentDefinition().tools.find((tool) => tool.type === "mcp_toolset");
+  assert.equal(toolset.default_config.enabled, undefined, "tools stay enabled by default");
+  assert.equal(toolset.configs, undefined, "no per-tool overrides without an allowlist");
+});
+
+test("AGENT_EFFORT defaults differ by provider, and both preserve today's behaviour", async () => {
+  const previous = process.env.AGENT_EFFORT;
+  delete process.env.AGENT_EFFORT;
+  process.env.AGENT_MODEL ??= "a-model";
+
+  const { agentDefinition } = await import("../api/providers/anthropic.js");
+
+  // high is what this agent's definition has always shipped with. Falling back
+  // to the API default would re-tune the live agent on the next agent-apply.
+  assert.equal(agentDefinition().model.effort, "high");
+
+  process.env.AGENT_EFFORT = "low";
+  assert.equal(agentDefinition().model.effort, "low");
+
+  if (previous === undefined) delete process.env.AGENT_EFFORT;
+  else process.env.AGENT_EFFORT = previous;
+});
