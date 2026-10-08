@@ -27,25 +27,51 @@
 # for. Never values: this file is committed, and a value here would be a
 # credential in a git history.
 #
-# `hosts` is the scope, not a hint. The secret is substituted into requests to
-# these hosts and to no others, so a name with the wrong hosts fails in a way
-# that reads as the agent being confused rather than as a config error.
+# `hosts` is where the secret is substituted, not what it may do there. ONCE
+# THE AGENT CAN REACH A HOST WITH A SECRET, EVERY OPERATION THAT SECRET
+# PERMITS IS AVAILABLE TO IT. A token that can delete lets the agent delete,
+# and nothing in this file or in either provider can narrow that to reads:
+# scoping here is per host, never per verb. So pick a token whose own grant is
+# already as small as the work needs, and where a provider offers no read-only
+# token, know that your step instructions are the only thing standing between
+# the agent and the rest of that API.
+#
+# The agent never sees the value. It holds a placeholder and the real secret is
+# substituted into the request at egress, which is the property worth having if
+# your agent writes prose anywhere a value could be echoed into.
 #
 # Name it for the scope it actually has. The agent cannot read the value but it
-# can read the name and will reason from it: ours once reported its credential
-# as read-only on the strength of a name ending _READ_TOKEN, which stopped
-# being true the moment the grant widened. Rename when you re-scope.
+# can read the name and will reason from it: one of ours reported its
+# credential as read-only on the strength of a name ending _READ_TOKEN, which
+# stopped being true the moment the grant widened. Rename when you re-scope.
 secrets: []
 # secrets:
 #   - name: EXAMPLE_API_WRITE_TOKEN
 #     hosts: [api.example.com]
 
-# Hosts the agent may reach that need no secret of ours.
+# Hosts the agent is expected to reach that need no secret of ours.
 #
-# Only meaningful with `sandbox: hosted`, since without a shell there is nothing
-# to make an arbitrary request from. A host carrying a secret above does not
-# need repeating here; the reconcile scripts work out what each provider needs
-# told, which differs between them.
+# READ THIS AS INTENT, NOT AS A BOUNDARY, BECAUSE WHAT ENFORCES IT DIFFERS BY
+# PROVIDER AND ONE OF THEM DOES NOT.
+#
+# On Anthropic the environment carries a network policy, and bin/capabilities-apply
+# writes this list into it. Egress to anything else is refused at the proxy with
+# a 403, so here the list is a real boundary.
+#
+# On OpenAI there is no environment object to write a policy to. The sandbox's
+# outbound access is not constrained by this file, and a credential's `hosts`
+# scope only where that secret is substituted. We watched an agent on a hosted
+# OpenAI sandbox reach two hosts that no credential scoped it to. So on that
+# provider this list documents what the agent is meant to need, and does not
+# stop it reaching more.
+#
+# Declare it either way: the reconcile script needs it, it is how a reader
+# learns what the deployment depends on, and it becomes a boundary the moment a
+# provider gives us one to write. Just do not treat it as containment where it
+# is not.
+#
+# A host carrying a secret above does not need repeating here; the reconcile
+# scripts work out what each provider needs told, which differs between them.
 egress: []
 # egress:
 #   - api.example.com
