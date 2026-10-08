@@ -5,8 +5,10 @@ Receives the webhook Manifestly sends when a run step is assigned to an AI agent
 ## Commands
 
 - `npm test`: Node's built-in runner, no framework. Zero test dependencies on purpose.
-- `./bin/agent-json`: render `agent.yaml` as the JSON body `/v1/agents` expects
-- `./bin/agent-apply`: sync `agent.yaml` to the live agent (needs `ANTHROPIC_API_KEY`, `CMA_AGENT_ID`)
+- `./bin/agent-json`: render `agent.yaml` as the JSON body `/v1/agents` expects. Node, and it renders what the relay parses; it was Python and hardcoded everything but the prompt
+- `./bin/agent-apply`: sync `agent.yaml` to the live agent (needs `ANTHROPIC_API_KEY`, `ANTHROPIC_AGENT_ID`). Refuses without `capabilities.yaml`, because parts of the definition derive from it and applying `sandbox: none` blind takes a live agent's shell away
+- `./bin/capabilities-discover`: print the `capabilities.yaml` matching what a provider account already permits. Read-only, needs only the provider's API key, discovers every id itself
+- `./bin/capabilities-apply`: make a provider account match `capabilities.yaml`. Dry run unless `--apply`. Never creates a credential and never deletes anything
 - `./bin/cma-inspect`: list the vaults, environments, agents and credentials on the account (needs `ANTHROPIC_API_KEY` only)
 - `./bin/cma-credential`: add an `environment_variable` credential to a vault without the value entering shell history
 - `./bin/cma-credential-rm`: remove a credential from a vault, after showing what it is and asking. Hard delete, no undo
@@ -23,13 +25,16 @@ A deployment is coupled to one provider. Six required in production, all set thr
 
 - `MANIFESTLY_WEBHOOK_SIGNING_SECRET`: account-level, from Settings. Verify it is 32 hex characters
 - `ANTHROPIC_API_KEY`: the key sessions are created with. Scope it to one workspace
-- `CMA_AGENT_ID` / `CMA_ENVIRONMENT_ID` / `CMA_VAULT_ID`: what every session is started from
+- `ANTHROPIC_AGENT_ID` / `ANTHROPIC_ENVIRONMENT_ID` / `ANTHROPIC_VAULT_ID`: what every session is started from. Named `CMA_*` until 2026-10-08, which said nothing a reader could connect to `AGENT_PROVIDER=anthropic`; the old names are still read
 
 On an `AGENT_PROVIDER=openai` deployment those three are replaced by:
 
 - `OPENAI_API_KEY`: the key sessions are created with. It needs three scopes, not one: Agents write, Vaults write, and Responses write. Agents alone returns 401 at the first turn rather than at session creation, which reads as a code problem. Permission changes take minutes to propagate
 - `OPENAI_VAULT_ID`: holds a `static_bearer` credential carrying the agent's Manifestly API key, matched to the MCP server url
-- `OPENAI_MODEL`: optional, defaults to `gpt-6-astra`. The Agents API is the Codex harness and refuses general models
+
+There is no `OPENAI_MODEL`. The model is `agent.yaml`'s, for both providers, because it describes the agent rather than this account.
+
+`api/_config.js` is the list, with what needs each variable and why. It is also the only thing that reads `process.env` outside the handler, so adding a variable without adding it there is the drift to avoid. A missing id used to surface as a provider API error on the first real delivery, which reads as a code fault.
 
 Two more so a run can find its session, supplied by the Upstash Redis marketplace integration under either spelling:
 
@@ -126,11 +131,19 @@ A missing or unset signing secret rejects everything. A bad signature rejects. A
 
 The 401 path logs three facts, body size, whether the header arrived and whether a secret is configured, because a bare 401 is indistinguishable from a platform login page returning the same status, which cost an afternoon. It logs no secret material and no digests.
 
-## agent.yaml Is The Source Of Truth
+## Two Config Files, And The Line Between Them
 
-The agent's system prompt, model, tools and MCP servers live in `agent.yaml`. `bin/agent-json` renders it; `agent.json` is generated and gitignored. Never hand-maintain a second copy. Two files that must agree is the drift this repo exists to avoid.
+**`agent.yaml` is the agent**: prompt, model, MCP servers. The same for everyone running this relay, so it is checked in and must stay generic.
 
-**It now has two readers, in two languages.** Anthropic takes a persisted agent, so `bin/agent-apply` syncs the rendered definition and the relay never sends a prompt. OpenAI takes the whole definition inline on every session create, so `api/_agent_definition.js` reads the same file at runtime. Its split rule is deliberately identical to `bin/agent-json`'s; they are twins, and a change to one is a change to both. A test asserts the two produce the same prompt.
+**`capabilities.yaml` is one deployment's reach**: `sandbox`, `secrets` by name with the hosts each authenticates to, `egress`. It names the specific systems a deployment's workflows use, which is exactly what `agent.yaml` must not. Gitignored, with a committed `.example`. Absent means MCP only, no shell, no egress, so the template runs unconfigured.
+
+**`AGENT_PROVIDER` is the only place any configuration names a provider.** Nothing else in either file does, and a test asserts no provider name appears as a key in `agent.yaml`. This was got wrong once, with `model`, `tools` and `environment` keyed under a `providers:` section: that is the two APIs' shapes written into a file whose job is to describe intent.
+
+So there is no `tools` list in either file. Both providers are told one thing -- every declared server, with permission pre-granted -- in different vocabularies, and each adapter builds its own from `mcpServers`. `always_allow` and `required: true` live next to the code that emits them, with the reason each is load-bearing. `agent_toolset_20260401` is likewise how Anthropic grants a shell, which is that adapter's business and appears in no config file.
+
+**One parser, one reader.** `api/_agent_definition.js` parses `agent.yaml` with the `yaml` package and `bin/agent-json` renders what it parses. Before 2026-10-08 there were three readers and two of them did not parse: `bin/agent-json` hardcoded name, description, model, `mcp_servers` and `tools` as Python literals and read only the system block, and `_agent_definition.js` scraped the server url with a regex matching the first `url:` line in the file, which silently drops a second `mcp_servers` entry. The file this repo called its source of truth held a second copy of every value except the prompt.
+
+The test that `bin/agent-json` renders the file catches **drift, not duplication**: a hardcoded value that happens to agree still passes. Verified by mutation in both directions.
 
 `agent.yaml` is imported by nothing, so Vercel will not trace it. It ships because `vercel.json` names it in `includeFiles`. If that regresses, an OpenAI deployment throws at module load rather than starting an agent with no instructions.
 
