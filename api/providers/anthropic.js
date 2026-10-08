@@ -1,10 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { name as agentName, description, instructions, mcpServers, providerSection } from "../_agent_definition.js";
+import { requiredEnv } from "../_config.js";
 
 /**
  * Everything this relay knows about Anthropic, and the only file that does.
  *
- * The seam is two calls and one predicate. The orchestration around them —
- * single flight, the run-and-agent pointer, the deferral — is a statement
+ * The seam is two calls and one predicate. The orchestration around them --
+ * single flight, the run-and-agent pointer, the deferral -- is a statement
  * about Manifestly's delivery contract rather than about any provider, and
  * stays in _session.js where it belongs.
  */
@@ -16,11 +18,32 @@ function anthropic() {
   return client;
 }
 
+/**
+ * The body POST /v1/agents expects, rendered from agent.yaml.
+ *
+ * Unused at session create, because this provider runs a persisted agent named
+ * by ANTHROPIC_AGENT_ID. bin/agent-json prints this and bin/agent-apply PUTs
+ * it, which is what keeps the live agent equal to the checked-in file. It lives
+ * here rather than in _agent_definition.js because the shape is Anthropic's.
+ */
+export function agentDefinition() {
+  const { model, tools } = providerSection(name);
+
+  return {
+    name: agentName,
+    description,
+    model,
+    system: instructions,
+    mcp_servers: mcpServers.map((server) => ({ ...server })),
+    tools,
+  };
+}
+
 export async function createSession({ runId, brief }) {
   const session = await anthropic().beta.sessions.create({
-    agent: process.env.CMA_AGENT_ID,
-    environment_id: process.env.CMA_ENVIRONMENT_ID,
-    vault_ids: [process.env.CMA_VAULT_ID],
+    agent: requiredEnv("ANTHROPIC_AGENT_ID"),
+    environment_id: requiredEnv("ANTHROPIC_ENVIRONMENT_ID"),
+    vault_ids: [requiredEnv("ANTHROPIC_VAULT_ID")],
     title: `Manifestly run ${runId}`,
     metadata: { manifestly_run_id: String(runId) },
     initial_events: [{ type: "user.message", content: [{ type: "text", text: brief }] }],

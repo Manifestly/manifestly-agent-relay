@@ -1,5 +1,6 @@
 import OpenAI from "openai";
-import { instructions, manifestlyMcpUrl } from "../_agent_definition.js";
+import { instructions, mcpServer, providerSection } from "../_agent_definition.js";
+import { requiredEnv } from "../_config.js";
 
 /**
  * Everything this relay knows about OpenAI, and the only file that does.
@@ -10,48 +11,51 @@ import { instructions, manifestlyMcpUrl } from "../_agent_definition.js";
  */
 export const name = "openai";
 
-// The Agents API is the Codex harness and refuses general models: gpt-5 is
-// rejected outright. Model validation also runs BEFORE the permission check,
-// so a bad model produces a 400 that looks like the credentials are fine.
-const MODEL = process.env.OPENAI_MODEL?.trim() || "gpt-6-astra";
-
 let client;
 function openai() {
   client ??= new OpenAI();
   return client;
 }
 
-// Unlike Anthropic, which takes a persisted agent id, OpenAI takes the whole
-// definition on every create. agent.yaml is still the one source for both.
-function agentDefinition() {
+/**
+ * An agent.yaml tool entry as the Agents API wants it.
+ *
+ * Only the server reference is translated. Everything else on the entry passes
+ * through untouched, so a flag this file has never heard of can be set in
+ * agent.yaml without editing code -- which is the point of the tools list
+ * living there. `required` and `connection_origin` are the two that matter
+ * today and agent.yaml carries the reasoning for both.
+ */
+function toolFor({ mcp_server_name, ...rest }) {
+  if (!mcp_server_name) return rest;
+
+  const server = mcpServer(mcp_server_name);
   return {
-    model: MODEL,
-    instructions,
-    tools: [
-      {
-        type: "mcp",
-        server_label: "manifestly",
-        transport: { type: "http", server_url: manifestlyMcpUrl },
-        // Defaults to false, which silently drops a server that will not
-        // connect. The turn then completes and the agent writes a confident
-        // answer saying it has no tools, with no error anywhere. Observed.
-        required: true,
-        // Documented as the default, pinned because environment is "none" and
-        // the alternative origin is an execution environment that will not exist.
-        connection_origin: "service",
-      },
-    ],
+    ...rest,
+    server_label: server.name,
+    transport: { type: "http", server_url: server.url },
   };
+}
+
+/**
+ * Unlike Anthropic, which takes a persisted agent id, OpenAI takes the whole
+ * definition on every create. agent.yaml is the one source for both, so the
+ * model and the tools here are the file's rather than this file's.
+ */
+function agentDefinition() {
+  const { model, tools } = providerSection(name);
+
+  return { model, instructions, tools: tools.map(toolFor) };
 }
 
 export async function createSession({ runId, brief }) {
   const session = await openai().beta.agents.sessions.create({
     agent: agentDefinition(),
-    // No sandbox. This agent only calls a remote MCP server, and a hosted
-    // environment is a second thing that can fail to provision: the one
-    // earlier attempt at this died with "The sandbox failed to connect".
-    environment: { type: "none" },
-    vault_ids: [process.env.OPENAI_VAULT_ID],
+    // Configured in agent.yaml, which carries why it is "none" today and what
+    // changing it costs. Not an env var: it describes the agent, and it would
+    // be the same value for everyone running this relay unchanged.
+    environment: providerSection(name).environment,
+    vault_ids: [requiredEnv("OPENAI_VAULT_ID")],
     metadata: { manifestly_run_id: String(runId) },
     input: brief,
   });

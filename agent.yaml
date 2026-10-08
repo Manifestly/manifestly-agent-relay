@@ -1,15 +1,16 @@
-# Applied with: ant beta:agents create < agent.yaml --transform id -r
+# The agent, for every provider. This file is the only definition of it.
 #
-# Deliberately says nothing about any particular process. What the work IS
-# lives in each Manifestly workflow's step instructions, which is what lets one
-# agent serve every workflow and lets the person who owns a process change it
-# without touching this file.
+# Anthropic takes a persisted agent, so bin/agent-apply syncs this file to it.
+# OpenAI takes the whole definition on each session create, so the relay reads
+# this file at runtime. Both read it through api/_agent_definition.js, so there
+# is one parser and no second copy of any value here.
+#
+# Deliberately says nothing about any particular process. What the work IS lives
+# in each Manifestly workflow's step instructions, which is what lets one agent
+# serve every workflow and lets the person who owns a process change it without
+# touching this file.
 name: Manifestly Ops Agent
 description: Works Manifestly run steps assigned to it, following each step's own instructions.
-
-model:
-  id: claude-opus-5
-  effort: high
 
 system: |
   You are an operations agent working inside Manifestly, a workflow and SOP platform.
@@ -60,20 +61,62 @@ system: |
     step you completed, so the person approving knows the work is ready rather
     than still arriving.
 
+# Shared by every provider, because the agent calls the same servers whoever is
+# running it. A server's url appears here and nowhere else: each provider's
+# tools below name a server from this list and the url is resolved from it.
 mcp_servers:
   - type: url
     name: manifestly
     url: https://mcp.manifest.ly/mcp
 
-tools:
-  # always_allow is load-bearing, not tidiness. mcp_toolset defaults to
-  # always_ask, which suspends every MCP call waiting for a tool_confirmation
-  # event. This agent is started by a fire-and-forget webhook relay with nobody
-  # listening to answer, so the default makes it emit tool calls and go idle
-  # with them pending, doing nothing and reporting nothing.
-  - type: mcp_toolset
-    mcp_server_name: manifestly
-    default_config:
-      permission_policy:
-        type: always_allow
-  - type: agent_toolset_20260401
+# Where the providers genuinely differ. Everything above is shared, so a change
+# to the prompt or to a server is one edit that reaches both.
+#
+# AGENT_PROVIDER selects which section applies. The other is inert, and the
+# relay refuses rather than inventing defaults for a provider with no section.
+providers:
+  anthropic:
+    model:
+      id: claude-opus-5
+      effort: high
+
+    tools:
+      # always_allow is load-bearing, not tidiness. mcp_toolset defaults to
+      # always_ask, which suspends every MCP call waiting for a
+      # tool_confirmation event. This agent is started by a fire-and-forget
+      # webhook relay with nobody listening to answer, so the default makes it
+      # emit tool calls and go idle with them pending, doing nothing and
+      # reporting nothing.
+      - type: mcp_toolset
+        mcp_server_name: manifestly
+        default_config:
+          permission_policy:
+            type: always_allow
+      - type: agent_toolset_20260401
+
+  openai:
+    # The Agents API is the Codex harness and refuses general models: gpt-5 is
+    # rejected outright. Model validation also runs BEFORE the permission check,
+    # so a bad model produces a 400 that looks like the credentials are fine.
+    model: gpt-6-astra
+
+    # No sandbox. This agent only calls remote MCP servers, and a hosted
+    # environment is a second thing that can fail to provision: the one earlier
+    # attempt died with "The sandbox failed to connect". Set this to
+    # openai_hosted only once something actually needs to execute code, and
+    # expect to debug provisioning separately from the agent.
+    environment:
+      type: none
+
+    tools:
+      - type: mcp
+        # Named from mcp_servers above. server_label and transport.server_url
+        # are built from that entry, so no url is repeated here.
+        mcp_server_name: manifestly
+        # Defaults to false, which silently drops a server that will not
+        # connect. The turn then completes and the agent writes a confident
+        # answer saying it has no tools, with no error anywhere. Observed.
+        required: true
+        # Documented as the default, pinned because environment is "none" and
+        # the alternative origin is an execution environment that will not exist.
+        connection_origin: service

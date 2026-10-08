@@ -56,9 +56,30 @@ test("the provider module loads and selects one", async () => {
 // module load and every delivery fails -- which is the right failure, but it
 // should fail here first.
 test("the agent definition loads from agent.yaml", async () => {
-  const { instructions, manifestlyMcpUrl } = await import("../api/_agent_definition.js");
+  const { instructions, mcpServer, mcpServers } = await import("../api/_agent_definition.js");
   assert.ok(instructions.length > 500, "the system prompt is substantial, not a stub");
-  assert.match(manifestlyMcpUrl, /^https:\/\//);
+  assert.ok(mcpServers.length > 0, "at least one mcp server is declared");
+  assert.match(mcpServer("manifestly").url, /^https:\/\//);
+});
+
+// mcp_servers is a list, and the url used to be scraped with a regex that took
+// the first `url:` line in the whole file. A second server was silently
+// dropped, and any `url:` key added above the list would have won instead.
+test("a server is resolved by name, not by position in the file", async () => {
+  const { mcpServer } = await import("../api/_agent_definition.js");
+  assert.throws(() => mcpServer("not-declared"), /not in mcp_servers/);
+});
+
+// Refusing beats defaulting: a deployment pointed at a provider this file says
+// nothing about has no model and no tools, and inventing them would start an
+// agent nobody described.
+test("a provider with no section in agent.yaml throws rather than defaulting", async () => {
+  const { providerSection } = await import("../api/_agent_definition.js");
+  assert.throws(() => providerSection("not-a-provider"), /no providers\.not-a-provider/);
+  for (const name of ["anthropic", "openai"]) {
+    assert.ok(providerSection(name).model, `${name} declares a model`);
+    assert.ok(providerSection(name).tools?.length, `${name} declares tools`);
+  }
 });
 
 test("the openai provider module loads and exposes the surface", async () => {
@@ -68,12 +89,22 @@ test("the openai provider module loads and exposes the surface", async () => {
   }
 });
 
-// The two readers of agent.yaml are twins in different languages. If they
-// drift, an OpenAI session runs a different prompt from the Anthropic agent
-// and nothing says so.
-test("both readers of agent.yaml produce the same system prompt", async () => {
+// bin/agent-json used to be Python and hardcoded everything but the prompt, so
+// agent.yaml's model, mcp_servers and tools existed twice with nothing making
+// them agree. It now renders what the relay parses. This asserts the whole
+// body comes from the file rather than from literals in either place.
+test("bin/agent-json renders agent.yaml rather than a second copy of it", async () => {
   const { execFileSync } = await import("node:child_process");
-  const { instructions } = await import("../api/_agent_definition.js");
-  const rendered = JSON.parse(execFileSync("./bin/agent-json", { encoding: "utf8" })).system;
-  assert.equal(instructions, rendered);
+  const { instructions, name, description, mcpServers, providerSection } = await import(
+    "../api/_agent_definition.js"
+  );
+  const rendered = JSON.parse(execFileSync("./bin/agent-json", { encoding: "utf8" }));
+  const declared = providerSection("anthropic");
+
+  assert.equal(rendered.system, instructions);
+  assert.equal(rendered.name, name);
+  assert.equal(rendered.description, description);
+  assert.deepEqual(rendered.model, declared.model);
+  assert.deepEqual(rendered.tools, declared.tools);
+  assert.deepEqual(rendered.mcp_servers, mcpServers.map((server) => ({ ...server })));
 });
