@@ -1,0 +1,163 @@
+#!/usr/bin/env node
+// Print the capabilities.yaml that matches what a provider account is already
+// configured to allow. Read-only: it writes nothing, here or at the provider.
+//
+// The mirror image of api/providers/. Those turn a neutral declaration into one
+// provider's objects; this reads one provider's objects back into the neutral
+// declaration. Useful exactly once per deployment -- when the account was set
+// up by hand before capabilities.yaml existed -- and after that as a way to
+// check the file still describes reality.
+//
+//   AGENT_PROVIDER=anthropic bin/capabilities-discover > capabilities.yaml
+//
+// Secret VALUES are never read. Neither provider returns them, and this needs
+// only names and hosts, which is all capabilities.yaml holds.
+import { env } from "../api/_config.js";
+
+const provider = process.env.AGENT_PROVIDER?.trim() || "anthropic";
+
+const SENSITIVE = "[SENSITIVE]";
+
+function die(message) {
+  process.stderr.write(`${message}\n`);
+  process.exit(1);
+}
+
+function hostsOf(auth) {
+  // environment_variable credentials scope themselves to hosts; the MCP-shaped
+  // ones name a single server url instead, and that server is already declared
+  // in agent.yaml, so they are not secrets in this file's sense.
+  const hosts = auth?.networking?.allowed_hosts ?? auth?.allowed_hosts;
+  return Array.isArray(hosts) ? hosts : null;
+}
+
+async function anthropic() {
+  const key = env("ANTHROPIC_API_KEY") ?? die("set ANTHROPIC_API_KEY");
+  // `vercel env pull` writes this literal for every value stored as a secret,
+  // which includes the ids. Sourcing that file looks like it worked and then
+  // every request fails with a confusing 400 naming the placeholder.
+  for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_AGENT_ID", "ANTHROPIC_ENVIRONMENT_ID", "ANTHROPIC_VAULT_ID"]) {
+    if (env(name) === SENSITIVE) {
+      die(`${name} is "${SENSITIVE}", which is what a Vercel env pull writes for a secret. Supply the real value, or unset it and let this script discover the id.`);
+    }
+  }
+  const get = async (path) => {
+    const response = await fetch(`https://api.anthropic.com/v1/${path}`, {
+      headers: {
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": "managed-agents-2026-04-01",
+      },
+    });
+    if (!response.ok) die(`GET /v1/${path} -> HTTP ${response.status}\n${(await response.text()).slice(0, 300)}`);
+    return response.json();
+  };
+
+  // Every id is discoverable from the key, which matters more here than it
+  // looks: the ids are not secret, but ours were added to Vercel as secrets,
+  // so `vercel env pull` returns [SENSITIVE] for them and a local .env cannot
+  // supply them. Needing only the key is what makes this script runnable.
+  const only = async (collection, label) => {
+    const { data = [] } = await get(collection);
+    if (data.length === 1) return data[0];
+    die(
+      data.length
+        ? `${data.length} ${collection} on this account; set ${label} to choose one:\n` +
+            data.map((item) => `  ${item.id}  ${item.name ?? ""}`).join("\n")
+        : `no ${collection} on this account`,
+    );
+  };
+
+  const agent = env("ANTHROPIC_AGENT_ID")
+    ? await get(`agents/${env("ANTHROPIC_AGENT_ID")}`)
+    : await only("agents", "ANTHROPIC_AGENT_ID");
+  const environment = env("ANTHROPIC_ENVIRONMENT_ID")
+    ? await get(`environments/${env("ANTHROPIC_ENVIRONMENT_ID")}`)
+    : await only("environments", "ANTHROPIC_ENVIRONMENT_ID");
+  const vault = env("ANTHROPIC_VAULT_ID")
+    ? { id: env("ANTHROPIC_VAULT_ID") }
+    : await only("vaults", "ANTHROPIC_VAULT_ID");
+  const credentials = await get(`vaults/${vault.id}/credentials`);
+
+  // Which toolset grants a shell is this provider's business, so the capability
+  // is read back out of the agent's tools rather than asked for directly.
+  const sandbox = (agent.tools ?? []).some((tool) => String(tool.type).startsWith("agent_toolset"))
+    ? "hosted"
+    : "none";
+
+  const networking = environment.config?.networking ?? {};
+  return {
+    sandbox,
+    allowedHosts: networking.allowed_hosts ?? [],
+    credentials: credentials.data ?? [],
+    notes: [
+      `agent ${agent.id} | environment ${environment.id} | vault ${vault.id}`,
+    `networking.type=${networking.type ?? "?"}`,
+      `allow_mcp_servers=${networking.allow_mcp_servers ?? "unset"}`,
+      networking.type === "unrestricted"
+        ? "networking is UNRESTRICTED: egress below is empty because the environment permits every host, which capabilities.yaml has no way to say. Decide the real list before relying on this file."
+        : null,
+    ].filter(Boolean),
+  };
+}
+
+async function openai() {
+  const { default: OpenAI } = await import("openai");
+  if (!env("OPENAI_API_KEY")) die("set OPENAI_API_KEY");
+  const vaultId = env("OPENAI_VAULT_ID") ?? die("set OPENAI_VAULT_ID");
+  const credentials = await new OpenAI().beta.agents.vaults.credentials.list(vaultId);
+
+  return {
+    // Sessions carry environment.type inline, so there is no account object to
+    // read it from: nothing here has run yet to observe. The relay's own
+    // default is the honest answer.
+    sandbox: "none",
+    allowedHosts: [],
+    credentials: credentials.data ?? [],
+    notes: [
+      `vault ${vaultId}`,
+      "sandbox is not discoverable on this provider: environment.type is set per session rather than on an account object, so this reports the safe default rather than what any past session used.",
+    ],
+  };
+}
+
+const discovered = await ({ anthropic, openai })[provider]?.() ??
+  die(`AGENT_PROVIDER "${provider}" is not one of: anthropic, openai`);
+
+const secrets = [];
+const mcpOnly = [];
+for (const credential of discovered.credentials) {
+  const auth = credential.auth ?? credential;
+  const hosts = hostsOf(auth);
+  const label = auth.secret_name ?? credential.name ?? credential.id;
+  if (hosts) secrets.push({ name: label, hosts });
+  else mcpOnly.push(`${label} -> ${auth.mcp_server_url ?? "(no host)"}`);
+}
+
+const claimed = new Set(secrets.flatMap((secret) => secret.hosts));
+const egress = discovered.allowedHosts.filter((host) => !claimed.has(host));
+
+const lines = [
+  "# Generated by bin/capabilities-discover. Read it before trusting it: it",
+  "# reports what the provider account currently permits, which is not always",
+  "# what the deployment needs.",
+  ...discovered.notes.map((note) => `# ${note}`),
+  ...(mcpOnly.length
+    ? [
+        "#",
+        "# Credentials authenticating an MCP server rather than a host, so they are",
+        "# not secrets in this file's sense; their server belongs in agent.yaml:",
+        ...mcpOnly.map((entry) => `#   ${entry}`),
+      ]
+    : []),
+  "",
+  `sandbox: ${discovered.sandbox}`,
+  "",
+  secrets.length ? "secrets:" : "secrets: []",
+  ...secrets.flatMap((secret) => [`  - name: ${secret.name}`, `    hosts: [${secret.hosts.join(", ")}]`]),
+  "",
+  egress.length ? "egress:" : "egress: []",
+  ...egress.map((host) => `  - ${host}`),
+];
+
+process.stdout.write(lines.join("\n") + "\n");
