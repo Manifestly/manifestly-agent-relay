@@ -1,0 +1,53 @@
+# What THIS deployment lets the agent reach. Copy to capabilities.yaml and edit.
+#
+# Separate from agent.yaml on purpose. agent.yaml describes the agent and is the
+# same for everyone running this relay; this file is one deployment's reach, and
+# it names the specific systems your workflows happen to use. Keeping them apart
+# is what lets agent.yaml stay generic, which the repo depends on.
+#
+# Provider-agnostic, all of it. How each of these becomes a vault credential, an
+# environment network policy or an inline session field is in api/providers/ and
+# in the reconcile scripts, because the two providers express every one of them
+# differently. Nothing here should read like either API.
+#
+# Absent entirely is a valid and safe configuration: the agent reaches the MCP
+# servers in agent.yaml, has no shell, and can reach nothing else.
+
+# Whether the agent gets a container it can execute in, and therefore a shell.
+#
+#   none    MCP only. It cannot run commands, so it cannot reach a host that
+#           is not an MCP server however the egress list below is set.
+#   hosted  The provider runs a container. The agent gets a shell, so every
+#           host in `egress` becomes reachable with curl, not only through MCP.
+#
+# This is a capability decision, not a provider one. An agent that only reads
+# and writes Manifestly needs `none`. One that calls an HTTP API the workflow
+# depends on needs `hosted`, and then the egress list is the real boundary.
+sandbox: none
+
+# Secrets the agent authenticates with, by NAME and by the hosts each one is
+# for. Never values: this file is committed, and a value here would be a
+# credential in a git history.
+#
+# `hosts` is the scope, not a hint. The secret is substituted into requests to
+# these hosts and to no others, so a name with the wrong hosts fails in a way
+# that reads as the agent being confused rather than as a config error.
+#
+# Name it for the scope it actually has. The agent cannot read the value but it
+# can read the name and will reason from it: ours once reported its credential
+# as read-only on the strength of a name ending _READ_TOKEN, which stopped
+# being true the moment the grant widened. Rename when you re-scope.
+secrets: []
+# secrets:
+#   - name: EXAMPLE_API_WRITE_TOKEN
+#     hosts: [api.example.com]
+
+# Hosts the agent may reach that need no secret of ours.
+#
+# Only meaningful with `sandbox: hosted`, since without a shell there is nothing
+# to make an arbitrary request from. A host carrying a secret above does not
+# need repeating here; the reconcile scripts work out what each provider needs
+# told, which differs between them.
+egress: []
+# egress:
+#   - api.example.com

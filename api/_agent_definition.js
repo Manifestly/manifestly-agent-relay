@@ -37,35 +37,44 @@ export const description = required(source.description, "no description");
 export const instructions = required(source.system, "no system block").trimEnd() + "\n";
 
 export const mcpServers = required(source.mcp_servers, "no mcp_servers").map((server) =>
-  Object.freeze({ ...server, url: required(server.url, `mcp server "${server.name}" has no url`) }),
+  Object.freeze({
+    name: required(server.name, "an mcp server has no name"),
+    url: required(server.url, `mcp server "${server.name}" has no url`),
+  }),
 );
 
 /**
- * The url for a named server, which is how a provider's tool entry refers to
- * one without repeating it. Throwing beats defaulting: a tool naming a server
- * that is not defined is a typo, and the alternative is an agent that starts
- * with a tool pointed nowhere and reports that it has no tools.
+ * There is deliberately no tools list in agent.yaml.
+ *
+ * Both providers are being told one thing -- every declared server, with
+ * permission pre-granted -- in different vocabularies. Expressing that twice,
+ * once per provider, put each API's shape into a file whose job is to describe
+ * the agent. So each adapter builds its own tools from mcpServers, and the
+ * reason its translation is load-bearing lives next to the code that emits it.
+ */
+
+/**
+ * The model, as its provider names it. Not keyed by provider: AGENT_PROVIDER is
+ * the only place this configuration names one, and a map here would have put
+ * provider identity back into a file that describes the agent.
+ *
+ * Unvalidated against the selected provider on purpose. The provider's own API
+ * rejects a model that is not its own with a message naming it, and a family
+ * regex here would be a guess with a shelf life.
+ */
+export const model = required(source.model, "no model");
+
+/**
+ * The url for a named server, which is how anything refers to one without
+ * repeating it. Throwing beats defaulting: naming a server that is not declared
+ * is a typo, and the alternative is an agent started with a tool pointed
+ * nowhere, reporting that it has no tools.
  */
 export function mcpServer(serverName) {
   const server = mcpServers.find((candidate) => candidate.name === serverName);
   if (!server) {
     const known = mcpServers.map((candidate) => candidate.name).join(", ") || "(none)";
-    throw new Error(`agent.yaml: tool names mcp server "${serverName}", which is not in mcp_servers (${known})`);
+    throw new Error(`agent.yaml: no mcp server "${serverName}" (has: ${known})`);
   }
   return server;
-}
-
-/**
- * The section for one provider. Absent means refuse, for the same reason
- * provider() refuses an unknown AGENT_PROVIDER: a deployment configured for a
- * provider this file says nothing about has no model and no tools, and
- * inventing them would start an agent nobody described.
- */
-export function providerSection(providerName) {
-  const section = source.providers?.[providerName];
-  if (!section) {
-    const known = Object.keys(source.providers ?? {}).join(", ") || "(none)";
-    throw new Error(`agent.yaml: no providers.${providerName} section (has: ${known})`);
-  }
-  return section;
 }

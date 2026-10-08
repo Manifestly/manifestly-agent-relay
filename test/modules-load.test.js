@@ -67,19 +67,31 @@ test("the agent definition loads from agent.yaml", async () => {
 // dropped, and any `url:` key added above the list would have won instead.
 test("a server is resolved by name, not by position in the file", async () => {
   const { mcpServer } = await import("../api/_agent_definition.js");
-  assert.throws(() => mcpServer("not-declared"), /not in mcp_servers/);
+  assert.throws(() => mcpServer("not-declared"), /no mcp server "not-declared"/);
 });
 
-// Refusing beats defaulting: a deployment pointed at a provider this file says
-// nothing about has no model and no tools, and inventing them would start an
-// agent nobody described.
-test("a provider with no section in agent.yaml throws rather than defaulting", async () => {
-  const { providerSection } = await import("../api/_agent_definition.js");
-  assert.throws(() => providerSection("not-a-provider"), /no providers\.not-a-provider/);
-  for (const name of ["anthropic", "openai"]) {
-    assert.ok(providerSection(name).model, `${name} declares a model`);
-    assert.ok(providerSection(name).tools?.length, `${name} declares tools`);
+// agent.yaml names a provider in exactly one place: nowhere. AGENT_PROVIDER is
+// the only provider-specific configuration there is, so a map keyed by provider
+// name creeping back into this file is a regression worth catching.
+test("agent.yaml does not name a provider", async () => {
+  const { readFileSync } = await import("node:fs");
+  const declared = readFileSync("agent.yaml", "utf8")
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("#"))
+    .join("\n");
+
+  for (const providerName of ["anthropic", "openai", "claude", "gpt"]) {
+    assert.doesNotMatch(
+      declared,
+      new RegExp(`^\\s*${providerName}\\s*:`, "im"),
+      `${providerName} is a key in agent.yaml; provider selection is AGENT_PROVIDER's job`,
+    );
   }
+});
+
+test("the model is one value, not a choice keyed by provider", async () => {
+  const { model } = await import("../api/_agent_definition.js");
+  assert.equal(typeof model, "string", "a map here would put provider identity back in agent.yaml");
 });
 
 test("the openai provider module loads and exposes the surface", async () => {
@@ -95,16 +107,37 @@ test("the openai provider module loads and exposes the surface", async () => {
 // body comes from the file rather than from literals in either place.
 test("bin/agent-json renders agent.yaml rather than a second copy of it", async () => {
   const { execFileSync } = await import("node:child_process");
-  const { instructions, name, description, mcpServers, providerSection } = await import(
-    "../api/_agent_definition.js"
-  );
+  const { instructions, name, description, mcpServers, model } = await import("../api/_agent_definition.js");
   const rendered = JSON.parse(execFileSync("./bin/agent-json", { encoding: "utf8" }));
-  const declared = providerSection("anthropic");
 
   assert.equal(rendered.system, instructions);
   assert.equal(rendered.name, name);
   assert.equal(rendered.description, description);
-  assert.deepEqual(rendered.model, declared.model);
-  assert.deepEqual(rendered.tools, declared.tools);
-  assert.deepEqual(rendered.mcp_servers, mcpServers.map((server) => ({ ...server })));
+  assert.equal(rendered.model.id, model);
+  assert.deepEqual(
+    rendered.mcp_servers,
+    mcpServers.map((server) => ({ type: "url", name: server.name, url: server.url })),
+  );
+});
+
+// sandbox: hosted is the customer-facing way to say "the agent runs commands".
+// agent_toolset_20260401 is how Anthropic grants that, which is this adapter's
+// business and nobody else's -- so it must be absent without the capability and
+// present with it, and it must never appear in either config file.
+test("the shell is granted by the sandbox capability, not named in config", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { agentDefinition } = await import("../api/providers/anthropic.js");
+  const { hasSandbox } = await import("../api/_capabilities.js");
+
+  for (const file of ["agent.yaml", "capabilities.example.yaml"]) {
+    assert.doesNotMatch(readFileSync(file, "utf8"), /agent_toolset/, `${file} must not name a toolset`);
+  }
+
+  const toolsets = agentDefinition().tools.map((tool) => tool.type);
+  assert.equal(
+    toolsets.includes("agent_toolset_20260401"),
+    hasSandbox,
+    "the agent toolset tracks the sandbox capability",
+  );
+  assert.ok(toolsets.includes("mcp_toolset"), "the mcp toolset is always present");
 });

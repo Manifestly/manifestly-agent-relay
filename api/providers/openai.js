@@ -1,5 +1,6 @@
 import OpenAI from "openai";
-import { instructions, mcpServer, providerSection } from "../_agent_definition.js";
+import { instructions, mcpServers, model } from "../_agent_definition.js";
+import { hasSandbox } from "../_capabilities.js";
 import { requiredEnv } from "../_config.js";
 
 /**
@@ -18,43 +19,53 @@ function openai() {
 }
 
 /**
- * An agent.yaml tool entry as the Agents API wants it.
+ * This provider's translation of "every declared server, with permission
+ * pre-granted", which is what agent.yaml says neutrally.
  *
- * Only the server reference is translated. Everything else on the entry passes
- * through untouched, so a flag this file has never heard of can be set in
- * agent.yaml without editing code -- which is the point of the tools list
- * living there. `required` and `connection_origin` are the two that matter
- * today and agent.yaml carries the reasoning for both.
+ * `required: true` is the load-bearing part. It defaults to false, which
+ * silently drops a server that will not connect: the turn then completes and
+ * the agent writes a confident answer saying it has no tools, with no error
+ * anywhere. Observed. It is this provider's equivalent of Anthropic needing
+ * always_allow, and for the same reason -- nobody is listening to intervene.
  */
-function toolFor({ mcp_server_name, ...rest }) {
-  if (!mcp_server_name) return rest;
-
-  const server = mcpServer(mcp_server_name);
-  return {
-    ...rest,
+function tools() {
+  return mcpServers.map((server) => ({
+    type: "mcp",
     server_label: server.name,
     transport: { type: "http", server_url: server.url },
-  };
+    required: true,
+    // Documented as the default. Pinned because the alternative origin is an
+    // execution environment, which does not exist under `sandbox: none`.
+    connection_origin: "service",
+  }));
+}
+
+/**
+ * `sandbox` from capabilities.yaml, in this provider's vocabulary.
+ *
+ * Here it is an inline per-session field and "none" is real, which is why the
+ * neutral config does not borrow Anthropic's environment_id shape: that is a
+ * required id naming a persisted account object, so the same intent has to be
+ * expressed there by what the environment permits rather than by asking for
+ * nothing. Translating in both adapters is cheaper than one config pretending
+ * the two APIs agree.
+ */
+function environment() {
+  return { type: hasSandbox ? "openai_hosted" : "none" };
 }
 
 /**
  * Unlike Anthropic, which takes a persisted agent id, OpenAI takes the whole
- * definition on every create. agent.yaml is the one source for both, so the
- * model and the tools here are the file's rather than this file's.
+ * definition on every create. agent.yaml is the one source for both.
  */
 function agentDefinition() {
-  const { model, tools } = providerSection(name);
-
-  return { model, instructions, tools: tools.map(toolFor) };
+  return { model, instructions, tools: tools() };
 }
 
 export async function createSession({ runId, brief }) {
   const session = await openai().beta.agents.sessions.create({
     agent: agentDefinition(),
-    // Configured in agent.yaml, which carries why it is "none" today and what
-    // changing it costs. Not an env var: it describes the agent, and it would
-    // be the same value for everyone running this relay unchanged.
-    environment: providerSection(name).environment,
+    environment: environment(),
     vault_ids: [requiredEnv("OPENAI_VAULT_ID")],
     metadata: { manifestly_run_id: String(runId) },
     input: brief,

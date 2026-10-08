@@ -9,11 +9,28 @@
 set -euo pipefail
 
 : "${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY}"
-: "${CMA_AGENT_ID:?set CMA_AGENT_ID}"
+agent_id="${ANTHROPIC_AGENT_ID:-${CMA_AGENT_ID:-}}"
+: "${agent_id:?set ANTHROPIC_AGENT_ID}"
 
 here=$(cd "$(dirname "$0")" && pwd)
 
-"$here/agent-json" | curl -fsSL "https://api.anthropic.com/v1/agents/$CMA_AGENT_ID" \
+# What the agent is allowed to reach is declared in capabilities.yaml, and parts
+# of the definition are derived from it: `sandbox: hosted` is what gives the
+# agent a shell. With no file the answer is `none`, which is the right default
+# for serving deliveries and the wrong one to apply blind -- it would quietly
+# take the shell away from a live agent that has one, and the agent would start
+# reporting that it cannot run commands rather than failing visibly.
+#
+# So this refuses, where the relay itself defaults. The dangerous direction is
+# mutating the live agent, not answering a webhook.
+if [ ! -f "$here/../capabilities.yaml" ]; then
+  echo "capabilities.yaml is missing, and this would apply sandbox: none." >&2
+  echo "That removes the agent's shell if it currently has one." >&2
+  echo "cp capabilities.example.yaml capabilities.yaml and declare it." >&2
+  exit 1
+fi
+
+"$here/agent-json" | curl -fsSL "https://api.anthropic.com/v1/agents/$agent_id" \
   -H "x-api-key: $ANTHROPIC_API_KEY" \
   -H "anthropic-version: 2023-06-01" \
   -H "anthropic-beta: managed-agents-2026-04-01" \
