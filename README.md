@@ -101,6 +101,30 @@ All of it is provider-agnostic, including `sandbox`. The two providers do not sh
 
 `bin/capabilities-apply` makes your provider account match the file. It is a dry run until you pass `--apply`, it never deletes anything, and it will not create a credential, since that needs the secret value and `bin/cma-credential` and `bin/openai-credential` already take one through a hidden prompt.
 
+## Check a credential before you install it
+
+A vault stores whatever you give it and tells you nothing about whether it works. A wrong-but-well-formed key fails much later, as an `authentication_error` on the agent's first turn, which reads as a code problem rather than a credential one. We lost twenty minutes to a key that was valid on a different environment.
+
+So verify against the host the credential is for, before adding it:
+
+```bash
+read -rs K
+curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+  -H "Authorization: Bearer $K" \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+  https://your-mcp-server/mcp
+```
+
+Read the status carefully, because two of them are easy to swap:
+
+- **200** the key is good for this host.
+- **401** the key is wrong, or for a different environment.
+- **406** the key is *fine* and the request shape is not. MCP streamable HTTP needs that `accept` header naming both types; omit it and a perfectly good key looks like a failure.
+
+Length checks do not help here. Keys for different environments share a format, so the byte count the credential scripts print confirms nothing was truncated and cannot tell you the key belongs to the host you are pointing it at.
+
 ## Cost knobs
 
 An agent's bill is mostly what it is told, repeatedly, rather than what it does. Two settings move it, in this order.
