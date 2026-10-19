@@ -170,12 +170,15 @@ async function deliverToRun(delivery, attempt = 0) {
 async function createSession(delivery) {
   return provider().createSession({
     runId: delivery.run_id,
-    brief: assignmentBrief(delivery, false),
+    // No session id yet: it does not exist until create returns. The
+    // scope-bearing half of a session's identity is the run, which is already
+    // here, so the brief is complete without it.
+    brief: assignmentBrief(delivery, false, null),
   });
 }
 
 async function sendToSession(sessionId, delivery) {
-  return provider().sendToSession(sessionId, { brief: assignmentBrief(delivery, true) });
+  return provider().sendToSession(sessionId, { brief: assignmentBrief(delivery, true, sessionId) });
 }
 
 async function refreshPointer(runId, agentId, sessionId) {
@@ -207,16 +210,41 @@ async function forgetQuietly(key) {
  * run through the Manifestly MCP server at whatever freshness it needs, so
  * this brief says which run and says nothing about what the work is: that
  * lives in the workflow's own step instructions.
+ *
+ * It does say which run is the ONLY one to act on, and that is not decoration.
+ * A session belongs to a (run, agent) pair -- that is what the pointer key
+ * encodes -- but the credential it holds is account-wide and the assignment
+ * lookup spans every run. So a session woken about one run can find another
+ * run's steps assigned to the same agent, and without being told otherwise it
+ * has no reason not to work them. That happened: a session woken by a
+ * terminal event on its own run went and completed a different run's steps,
+ * overwriting the work of the session that run belonged to.
+ *
+ * `sessionId` is null on the first message, because the id does not exist
+ * until create returns. That costs nothing that matters here: the scope-
+ * bearing half of a session's identity is the run, not the opaque id, and the
+ * run is known from the start. The id is added on later deliveries so the
+ * agent can name itself in what it writes instead of inventing an identifier,
+ * which one has been observed to do.
  */
-function assignmentBrief(delivery, resumed) {
+function assignmentBrief(delivery, resumed, sessionId) {
+  const runId = delivery.run_id;
+
   return [
     resumed
-      ? `More Manifestly work has arrived on a run you are already working (${delivery.event}).`
+      ? `More Manifestly work has arrived on the run this session is for (${delivery.event}).`
       : `Manifestly has work waiting for you (${delivery.event}).`,
-    `run_id=${delivery.run_id}`,
-    `run_step_id=${delivery.run_step_id ?? "(not specified, find your own assignments in the run)"}`,
+    `You are the session for run ${runId}. That is your scope as much as your name: act only on this run.`,
+    `Steps assigned to this agent on any other run belong to that run's own session. Do not work them, even if they are assigned to you and look ready. When you ask what is assigned to you, ask about run ${runId}.`,
+    `run_id=${runId}`,
+    `run_step_id=${delivery.run_step_id ?? `(not specified; find your assignments on run ${runId})`}`,
     `department_id=${delivery.department_id}`,
-    `Read the run through the Manifestly MCP server and complete the steps assigned to you.`,
+    sessionId
+      ? `session_id=${sessionId}`
+      : `session_id=(not known on this first message; say so rather than inventing one)`,
+    `Read the run through the Manifestly MCP server and complete the steps assigned to you on it.`,
     `Other deliveries for this run may have been folded into this session, so read the run's current state rather than assuming this event is all that is waiting.`,
   ].join("\n");
 }
+
+export { assignmentBrief };
